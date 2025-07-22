@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 
 #[derive(Component)]
+struct CameraControl {
+    speed: f32,
+}
+
+#[derive(Component, Copy, Clone)]
 struct Rotates {
     axis: Vec3,
     speed: f32, // radians per seconds
@@ -16,7 +21,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
-        .add_systems(Update, spin)
+        .add_systems(Update, (spin, camera_control))
         .run();
 
 }
@@ -63,7 +68,10 @@ fn setup(
     // camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(-2.5, 4.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y)
+        Transform::from_xyz(-2.5, 4.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
+        CameraControl {
+            speed: 3.0,
+        },
     ));
 }
 
@@ -79,8 +87,46 @@ fn spin(mut query: Query<(&mut Transform, &Rotates)>, time: Res<Time>) {
                 let pos = transform.translation;
                 let rotation = Quat::from_axis_angle(rotate.axis, rotate.speed *dt);
                 transform.translation = rotation * pos;
-                transform.look_at(Vec3::ZERO, Vec3::X);
+                transform.look_at(Vec3::ZERO, Vec3::Y);
             }
+        }
+    }
+}
+
+fn camera_control(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(&mut Transform, &CameraControl)>,
+) {
+    let dt = time.delta_secs();
+    
+
+    for (mut transform, control) in &mut query {
+        let mut direction = Vec3::ZERO;
+        let forward = transform.forward();
+        let right = transform.right();
+        let speed_multiplier = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+            2.0
+        } else {
+            1.0
+        }; 
+
+        if keys.pressed(KeyCode::KeyW) {
+            direction += *forward;
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            direction -= *forward;
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            direction -= *right;
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            direction += *right;
+        }
+
+        if direction != Vec3::ZERO {
+            let displacement = direction.normalize() * control.speed * speed_multiplier * dt;
+            transform.translation += displacement;
         }
     }
 }
