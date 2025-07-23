@@ -1,8 +1,11 @@
 use bevy::prelude::*;
+use bevy::input::mouse::MouseMotion;
+use bevy::input::mouse::MouseWheel;
+
 
 #[derive(Component)]
 struct CameraControl {
-    speed: f32,
+    speed: f32, 
 }
 
 #[derive(Component, Copy, Clone)]
@@ -96,21 +99,25 @@ fn spin(mut query: Query<(&mut Transform, &Rotates)>, time: Res<Time>) {
 fn camera_control(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    mut evr_motion: EventReader<MouseMotion>,
+    mut evr_scroll: EventReader<MouseWheel>,
     mut query: Query<(&mut Transform, &CameraControl)>,
 ) {
     let dt = time.delta_secs();
     
-
     for (mut transform, control) in &mut query {
         let mut direction = Vec3::ZERO;
+        let center = Vec3::ZERO;
         let forward = transform.forward();
         let right = transform.right();
         let speed_multiplier = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
             2.0
         } else {
             1.0
-        }; 
-
+        };
+        
+        // WASD movement
         if keys.pressed(KeyCode::KeyW) {
             direction += *forward;
         }
@@ -123,10 +130,38 @@ fn camera_control(
         if keys.pressed(KeyCode::KeyD) {
             direction += *right;
         }
-
         if direction != Vec3::ZERO {
             let displacement = direction.normalize() * control.speed * speed_multiplier * dt;
             transform.translation += displacement;
+        }
+
+        // mouse movement
+        if mouse_button.pressed(MouseButton::Middle) {
+            for ev in evr_motion.read() {
+                let delta = ev.delta;
+                let mouse_sensitivity: f32 = 0.005;
+
+                let yaw = Quat::from_axis_angle(Vec3::Y, -delta.x * mouse_sensitivity);
+                let pitch = Quat::from_axis_angle(*right, -delta.y * mouse_sensitivity);
+
+                let camera_offset = transform.translation - center;
+                let camera_rotated_offset = yaw * pitch * camera_offset;
+
+                transform.translation = center + camera_rotated_offset;
+                transform.look_at(center, Vec3::Y);
+            }
+        }
+        // zoom function
+        for ev in evr_scroll.read() {
+            let scroll_amount = ev.y;
+            let zoom_speed: f32 = 10.0;
+
+            let camera_offset = transform.translation - center;
+            let zoom_delta = camera_offset.normalize() * scroll_amount * zoom_speed * dt;
+
+            transform.translation -= zoom_delta;
+
+            transform.look_at(center, Vec3::Y);
         }
     }
 }
