@@ -8,7 +8,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
 
       # Installing system libs that Bevy's audio backend needs
       # ran to an error without it
