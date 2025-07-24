@@ -5,7 +5,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct SolidColor {
     #[uniform(0)]
-    pub color: LinearRgba, // Color didn't work
+    pub color: LinearRgba, // Color didn't work for uniform
 }
 
 impl Material for SolidColor {
