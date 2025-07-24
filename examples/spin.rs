@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
 use bevy::input::mouse::MouseWheel;
 
+use bevy_gpu_fluid::solid_color::SolidColor;
 
 #[derive(Component)]
 struct CameraControl {
@@ -22,7 +23,11 @@ enum RotationMode {
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(AssetPlugin {
+            watch_for_changes_override: Some(true),
+            ..default()
+        }))
+        .add_plugins(MaterialPlugin::<SolidColor>::default())
         .add_systems(Startup, setup)
         .add_systems(Update, (spin, camera_control))
         .run();
@@ -34,6 +39,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut solid_mats: ResMut<Assets<SolidColor>>,
 ) {
     // circular base
     commands.spawn((
@@ -43,9 +49,13 @@ fn setup(
     ));
 
     // cube
+    let mat = solid_mats.add(SolidColor {
+        color: LinearRgba { red: 0.2, green: 0.8, blue: 0.9, alpha: 1.0 }
+    });
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        MeshMaterial3d(mat),
+        //MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
         Transform::from_xyz(0.0, 0.5, 0.0),
         Rotates {
             axis: Vec3::Y,
@@ -63,7 +73,7 @@ fn setup(
         Transform::from_xyz(1.0, 3.0, 1.0),
         Rotates {
             axis: Vec3::X,
-            speed: 2.0,
+            speed: 0.0,
             mode: RotationMode::OrbitAround,
         },
     ));
