@@ -12,7 +12,7 @@ What made Bevy very interesting was the fact that the developer is close to the 
 
 The sample scene was as following:
 
-![[sample_scene1_cube.png]]
+![cube scene](sample_scene1_cube.png)
 
 ## WGSL script
 Right now the WGSL script is very simple. It just defines a new color for the cube. There were interesting challenges, however!
@@ -50,7 +50,7 @@ However, for a solid custom color, I had to use `vec4<f32>` and
 
 The result is 
 
-![[sample_scene1_cube_solid_color.png]]
+![solid color cube scene](sample_scene1_cube_solid_color.png)
 
 It is intentional that the cube has a solid color with no texture and no realistic reaction to the light in the scene. As mentioned already, this was just done to make sure that there is no problem on the system and WGSL communicates with my scene. 
 
