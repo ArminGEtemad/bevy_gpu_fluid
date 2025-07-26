@@ -2,31 +2,10 @@ use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
 use bevy::input::mouse::MouseWheel;
 
+use bevy_gpu_fluid::{SceneControl, Rotates, ControlTarget, RotationMode};
 use bevy_gpu_fluid::solid_color::SolidColor;
 
-#[derive(Component)]
-struct SceneControl {
-    target: ControlTarget,
-    speed: f32, 
-}
 
-#[derive(Resource, PartialEq, Debug, Copy, Clone)]
-enum ControlTarget {
-    Camera, 
-    Light, 
-}
-
-#[derive(Component, Copy, Clone)]
-struct Rotates {
-    axis: Vec3,
-    speed: f32, // radians per seconds
-    mode: RotationMode,
-}
-#[derive(Debug, Copy, Clone)]
-enum RotationMode {
-    SpinInPlace,
-    OrbitAround, // assumes center = Vec3::ZERO for now
-}
 
 fn main() {
     App::new()
@@ -68,7 +47,7 @@ fn setup(
         Transform::from_xyz(0.0, 0.5, 0.0),
         Rotates {
             axis: Vec3::Y,
-            speed: 1.0,
+            speed: 0.0,
             mode: RotationMode::SpinInPlace,
         },
     ));
