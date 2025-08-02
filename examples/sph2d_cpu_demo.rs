@@ -18,6 +18,20 @@ fn main() {
         .run();
 }
 
+fn density_color(t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        let u = t * 2.0;
+        Color::srgb(0.0, u, 1.0)
+    } else if t < 0.75 {
+        let u = (t - 0.5) / 0.25;
+        Color::srgb(u, 1.0, 1.0 - u)
+    } else {
+        let u = (t - 0.75) / 0.25;
+        Color::srgb(1.0, 1.0 - u, 0.0)
+    }
+}
+
 
 fn sph_step(mut sph: ResMut<SPHState>, time: Res<Time>) {
     let dt = time.delta_secs().min(DT);
@@ -26,12 +40,22 @@ fn sph_step(mut sph: ResMut<SPHState>, time: Res<Time>) {
 
 fn sync_particles(
     sph: Res<SPHState>,
-    mut query: Query<(&ParticleVisual, &mut Transform)>,
+    mut query: Query<(&ParticleVisual, &mut Transform, &mut Sprite)>,
 ) {
-    for (visual, mut transform) in query.iter_mut() {
-        let pos = sph.particles[visual.0].pos;
-        transform.translation.x = pos.x * RENDER_SCALE;
-        transform.translation.y = pos.y * RENDER_SCALE;
+    let (mut min_rho, mut max_rho) = (f32::MAX, f32::MIN);
+    for p in &sph.particles {
+        min_rho = min_rho.min(p.rho);
+        max_rho = max_rho.max(p.rho);
+    }
+    let inv_range = if max_rho > min_rho { 1.0 / (max_rho - min_rho) } else { 0.0 };
+
+    for (visual, mut transform, mut sprite) in query.iter_mut() {
+        let particle = &sph.particles[visual.0];
+        transform.translation.x = particle.pos.x * RENDER_SCALE;
+        transform.translation.y = particle.pos.y * RENDER_SCALE;
+
+        let t = ((particle.rho - min_rho) * inv_range).clamp(0.0, 1.0);
+        sprite.color = density_color(t);
     }
 }
 
