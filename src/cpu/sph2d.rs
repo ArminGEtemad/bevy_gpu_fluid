@@ -2,6 +2,7 @@
 
 use glam::{Vec2, IVec2}; // glam is a linear algebra library
 // https://docs.rs/glam/latest/glam
+use bevy::prelude::Resource; // must be added so bevy use this as a Resource
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
@@ -81,6 +82,7 @@ impl Particle {
     }
 }
 
+#[derive(Resource)] // must be added so bevy use this as a Resource
 pub struct SPHState {
     pub h: f32, // https://en.wikipedia.org/wiki/Smoothed-particle_hydrodynamics
     pub rho_0: f32, // (not inital density but the rest density)
@@ -199,14 +201,30 @@ impl SPHState {
     }
 
     pub fn integrate(&mut self, dt: f32) {
+        // harcoded boundaries!
+        const X_MIN: f32 = -5.0;
+        const X_MAX: f32 = 5.0;
+        const BOUNCENESS: f32 = -4.0;  
         for p in &mut self.particles {
             p.vel += p.acc * dt;
             p.pos += p.vel * dt;
 
-            // bounce at the boundary
+            // floor
             if p.pos.y < 0.0 {
                 p.pos.y = 0.0;
-                p.vel.y *= -3.0;
+                p.vel.y *= BOUNCENESS;
+            }
+
+            // left wall
+            if p.pos.x < X_MIN {
+                p.pos.x = X_MIN;
+                p.vel.x *= BOUNCENESS;
+            }
+
+            // right wall
+            if p.pos.x > X_MAX {
+                p.pos.x = X_MAX;
+                p.vel.x *= BOUNCENESS;
             }
         }
     }
@@ -215,5 +233,20 @@ impl SPHState {
         self.density_pressure_calc();
         self.accel_field_calc();
         self.integrate(dt);
+    }
+
+
+    // demo
+    pub fn demo_block_5k() -> Self {
+        let mut demo_sim_sph = Self::new(
+        0.045,
+        1000.0,
+        3.0,
+        0.2,
+        1.6,
+        );
+
+        demo_sim_sph.init_grid(71, 71, 0.04);
+        demo_sim_sph
     }
 }
