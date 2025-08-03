@@ -110,7 +110,7 @@ fn apply_drag(
         return;
     }
 
-    let window = match windows.get_single() {
+    let window = match windows.single() {
         Ok(w) => w,
         Err(_) => return,
     };
