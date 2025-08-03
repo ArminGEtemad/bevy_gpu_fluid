@@ -61,10 +61,13 @@ fn integral_no_nan() {
     let k = 3.0;
     let mu = 0.1;
     let m = rho_0  * spacing * spacing;
+    let x_max = 3.0;
+    let x_min = -3.0;
+    let bounce = 3.0;
 
     let mut sph = SPHState::new(h, rho_0, k, mu, m);
     sph.init_grid(10, 10, spacing);
-    for _ in 0..50 { sph.step(0.001); }
+    for _ in 0..50 { sph.step(0.001, x_max, x_min, bounce); }
     assert!(sph.particles.iter().all(|p| p.pos.is_finite()));
 
 }
