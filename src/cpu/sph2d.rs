@@ -1,34 +1,28 @@
 // smoothed particle hydrodynamics in 2D (CPU prototype)
+use std::{collections::HashMap, f32::consts::PI};
 
-use glam::{Vec2, IVec2}; // glam is a linear algebra library
-// https://docs.rs/glam/latest/glam
-use bevy::prelude::Resource; // must be added so bevy use this as a Resource
-use std::collections::HashMap;
-use std::f32::consts::PI;
+use glam::{Vec2, IVec2};
+use bevy::prelude::Resource;
 
-#[inline] // avoid function call overhead
+type Cell = IVec2;
+
+const GRAVITY: Vec2 = Vec2::new(0.0, -9.81);
+
+#[inline]
 fn cell(pos: Vec2, h: f32) -> IVec2 {
-    // maps a particle's position to a grid cell coordinates
     (pos / h).floor().as_ivec2()
 }
 
-// https://www.cs.cornell.edu/courses/cs5643/2015sp/stuff/BridsonFluidsCourseNotes_SPH_pp83-86.pdf
-// eq 15.5
-// https://physics.stackexchange.com/questions/138700/kernel-normalization-in-smoothed-particle-hydrodynamcs
-// for 2 D
+// define 2D Kernels
+
 #[inline]
 fn w_poly6(r2: f32, h: f32) -> f32 {
-    // let k: f32 = 315.0 / (64.0 * PI * h.powi(9)); 3D
     let k: f32 = 4.0 / (PI * h.powi(8));
     if r2 >= 0.0 && r2 <= h * h {
         k * (h * h - r2).powi(3)
     } else { 0.0 }
 }
 
-// https://www.cs.cmu.edu/~scoros/cs15467-s16/lectures/11-fluids2.pdf
-// https://cs418.cs.illinois.edu/website/text/sph.html
-// TODO: TeX my derivation analog to 3D
-// https://courses.grainger.illinois.edu/CS418/sp2023/text/sph.html
 #[inline]
 fn grad_spiky_kernel(r: Vec2, h: f32) -> Vec2 {
     let r_len = r.length();
@@ -50,49 +44,30 @@ fn laplacian_visc(r: f32, h: f32) -> f32 {
     } 
 }
 
-/* to describe equation of motion of a fluid we need 
-   the position of the elements,
-   momentum (or velocity),
-   density and
-   pressure.*/ 
-
-/* let's go with AoS meaning each struct will save
-   all the properties. Reason is that it is easier 
-   for now and more intuitive for a prototype */ 
-
 #[derive(Clone, Debug)]
 pub struct Particle {
-    pub pos: Vec2,
-    pub vel: Vec2,
-    pub acc: Vec2,
-    pub rho: f32,
-    pub p: f32,
-    // TODO: viscosity has to be added at some point?
+    pub pos: Vec2, // position 
+    pub vel: Vec2, // velocity
+    pub acc: Vec2, // acceleration
+    pub rho: f32, // density
+    pub p: f32, // pressure
 }
 
 impl Particle {
     pub fn new(pos: Vec2) -> Self {
-        Self {
-            pos, 
-            vel: Vec2::ZERO,
-            acc: Vec2::ZERO,
-            rho: 0.0,
-            p: 0.0,
-        }
+        Self { pos, vel: Vec2::ZERO, acc: Vec2::ZERO, rho: 0.0, p: 0.0 }
     }
 }
 
-#[derive(Resource)] // must be added so bevy use this as a Resource
+#[derive(Resource)]
 pub struct SPHState {
-    pub h: f32, // https://en.wikipedia.org/wiki/Smoothed-particle_hydrodynamics
-    pub rho_0: f32, // (not inital density but the rest density)
-    pub k: f32,
-    pub mu: f32, 
-    pub m: f32,
+    pub h: f32, // smoothing length
+    pub rho_0: f32, 
+    pub k: f32, // stiffness
+    pub mu: f32, // viscosity
+    pub m: f32, // mass
     pub particles: Vec<Particle>,
 }
-
-type Cell = IVec2;
 
 impl SPHState {
     pub fn new(h: f32, rho_0: f32, k: f32, mu: f32, m: f32) -> Self {
@@ -111,7 +86,6 @@ impl SPHState {
     }
 
     pub fn build_grid(&self) -> HashMap<Cell, Vec<usize>> {
-        // hash grid, with key -> cell index, returns -> list of particle indices
         let mut grid: HashMap<Cell, Vec<usize>> = HashMap::with_capacity(self.particles.len());
 
         for (i, p) in self.particles.iter().enumerate() {
@@ -148,8 +122,7 @@ impl SPHState {
         }
         for i in 0..self.particles.len() {
             self.particles[i].rho = rho_vec[i];
-            self.particles[i].p = self.k * (rho_vec[i] - self.rho_0).max(0.0); // eq 15.15 Bridson Fluids
-                                                                               // making sure pressure is not negative
+            self.particles[i].p = self.k * (rho_vec[i] - self.rho_0).max(0.0);
         }
     }
 
@@ -162,7 +135,6 @@ impl SPHState {
             let particle_i = &self.particles[i];
             let pos_i = particle_i.pos;
             let p_i = particle_i.p;
-            let rho_i = particle_i.rho;
             let vel_i = particle_i.vel;
             let cell_i = cell(pos_i, self.h);
 
@@ -191,8 +163,7 @@ impl SPHState {
                 }
             }
 
-            // gravity
-            acc_vec[i] += Vec2::new(0.0, -9.81);
+            acc_vec[i] += GRAVITY;
         }
 
         for i in 0..self.particles.len() {
@@ -201,42 +172,44 @@ impl SPHState {
     }
 
     pub fn integrate(&mut self, dt: f32) {
-        // harcoded boundaries!
-        const X_MIN: f32 = -5.0;
-        const X_MAX: f32 = 5.0;
-        const BOUNCENESS: f32 = -4.0;  
         for p in &mut self.particles {
             p.vel += p.acc * dt;
             p.pos += p.vel * dt;
+        }
+    }
 
+    pub fn apply_boundaries(&mut self, x_max: f32, x_min: f32, bounce: f32) {
+        // bounciness must be a negative number
+        for p in &mut self.particles {
             // floor
             if p.pos.y < 0.0 {
                 p.pos.y = 0.0;
-                p.vel.y *= BOUNCENESS;
-            }
-
-            // left wall
-            if p.pos.x < X_MIN {
-                p.pos.x = X_MIN;
-                p.vel.x *= BOUNCENESS;
+                p.vel.y *= bounce;
             }
 
             // right wall
-            if p.pos.x > X_MAX {
-                p.pos.x = X_MAX;
-                p.vel.x *= BOUNCENESS;
+            if p.pos.x > x_max {
+                p.pos.x = x_max;
+                p.vel.x *= bounce;
+            }
+
+            // left wall
+            if p.pos.x < x_min {
+                p.pos.x = x_min;
+                p.vel.x *= bounce;
             }
         }
     }
 
-    pub fn step(&mut self, dt: f32) {
+    pub fn step(&mut self, dt: f32, x_max: f32, x_min: f32, bounce: f32) {
         self.density_pressure_calc();
         self.accel_field_calc();
         self.integrate(dt);
+        self.apply_boundaries(x_max, x_min, bounce)
     }
 
 
-    // demo
+    // demo function ----------------------------------------------
     pub fn demo_block_5k() -> Self {
         let mut demo_sim_sph = Self::new(
         0.045,
@@ -249,4 +222,5 @@ impl SPHState {
         demo_sim_sph.init_grid(71, 71, 0.04);
         demo_sim_sph
     }
+    // ------------------------------------------------------------
 }
