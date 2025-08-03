@@ -9,6 +9,12 @@ This protype implements SPH (Smoothed-Particle Hydrodynamics) in Bevy.
 The long term goal is to providfe a fully GPU-accelarated and rendered fluid dynamics.
 The 2D CPU-based prototype is available for testing and algorithm validation.
 
+![Demo 1](docs/sprint2/demo_scene.gif)
+
+| ![Demo_SolidColor](docs/sprint2/solid_color.png) | ![Demo_DensityColor](docs/sprint2/density_map.png) |
+|------------------------------------------|------------------------------------------|
+| Solid Color                              | Density Color Mapping                    |
+
 ## Features (CPU ptototype)
 - 2D SPH simulation using Poly6, Spiky and Viscosity kernels normalized for 2D
 - Interactive mouse-driven fluid manipulation
@@ -22,11 +28,12 @@ The 2D CPU-based prototype is available for testing and algorithm validation.
   - mass
   - etc.
 
-## Controls
-| Action                   | Key / Mouse |
-|--------------------------|-------------|
-| Switch view mode         | `Space`     |
-| Click + drag to disturb fluid | Left mouse button |
+## Controls & Demos
+
+| Action | Key / Mouse | Demo |
+|--------|-------------|------|
+| Switch view mode | `Space` | ![Demo_Toggle](docs/sprint2/toggle_demo.gif) |
+| Click + drag to disturb fluid | Left mouse button | ![Demo_Mouse](docs/sprint2/mouse_drag_example.gif) |
 
 
 ## Quick start
