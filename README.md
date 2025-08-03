@@ -1,8 +1,10 @@
 # bevy_gpu_fluid
 
-> **GPU-accelerated Smoothed-Particle Hydrodynamics for Bevy 0.16**  
+> **GPU-accelerated Smoothed-Particle Hydrodynamics for Bevy 0.16**
+
 > _Early work-in-progress – APIs will change until v0.1_
-> _Currently a CPU prototype_ - GPU implementation in progress
+
+> _Currently a CPU prototype - GPU implementation in progress_
 
 ## Overview
 This protype implements SPH (Smoothed-Particle Hydrodynamics) in Bevy.
@@ -15,7 +17,7 @@ The 2D CPU-based prototype is available for testing and algorithm validation.
 |------------------------------------------|------------------------------------------|
 | Solid Color                              | Density Color Mapping                    |
 
-## Features (CPU ptototype)
+## Features (CPU prototype)
 - 2D SPH simulation using Poly6, Spiky and Viscosity kernels normalized for 2D
 - Interactive mouse-driven fluid manipulation
 - Switching between visualization modes is possible:
