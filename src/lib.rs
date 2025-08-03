@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 
 pub mod solid_color;
+pub mod cpu {
+    pub mod sph2d;
+}
 
 #[derive(Component)]
 pub struct SceneControl {
