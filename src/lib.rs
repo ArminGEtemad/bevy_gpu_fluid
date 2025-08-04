@@ -1,8 +1,13 @@
 use bevy::prelude::*;
 
 pub mod solid_color;
+
 pub mod cpu {
     pub mod sph2d;
+}
+
+pub mod gpu {
+    pub mod ffi;
 }
 
 #[derive(Component)]

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bevy = "0.16.1"
 glam = "0.30.5"
+bytemuck = "1.23.1"
 
 [dev-dependencies]
 criterion = "0.7.0"
