@@ -81,7 +81,7 @@ fn laplacian_visc(r: f32, h: f32) -> f32 {
 | Name & Range                       | $W(r, h)$  (2D)       | $\nabla W$  (2D)         |  $\Delta W$  (2D)         |
 |--------------------------------------|-----------------------|--------------------------|--------------------------|
 | **Poly6** $0\le r\le h$              | $\frac{4}{\pi h^8} (h^2 - r^2)^3$ | $\times$ | $\times$ |
-| **Spiky** $0\le r\le h$              | $\times$ | $\frac{-10}{\pih^5} (h - r)^2 \hat{r}$ | $\times$ |
+| **Spiky** $0\le r\le h$              | $\times$ | $\frac{-10}{\pi h^5} (h - r)^2 \hat{r}$ | $\times$ |
 | **Viscosity (Müller)** $0\le r\le h$ | $\times$ | $\times$ | $\frac{40}{\pi h^5} (h - r)$ |
 
 The difference between the 2D and the 3D version seems to only be the normalization factors. So the code would have still worked
