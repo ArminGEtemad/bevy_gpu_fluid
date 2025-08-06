@@ -35,6 +35,7 @@ enum ViewMode {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(bevy_gpu_fluid::gpu::buffers::GPUSPHPlugin)
         .insert_resource(SPHState::demo_block_5k())
         .insert_resource(DragInput::default())
         .insert_resource(ViewMode::DensityColor)

@@ -13,5 +13,5 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
     if (gid.x >? arrayLength(&particles)) {
         return;
     }
-    // TODO: density loop just like before!
+    
 }

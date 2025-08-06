@@ -9,3 +9,4 @@ pub struct GPUParticle {
     pub rho: f32,
     pub p: f32,
 }
+
