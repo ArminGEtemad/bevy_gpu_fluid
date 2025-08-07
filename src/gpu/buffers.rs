@@ -8,6 +8,7 @@ use bevy::render::{RenderApp, Render, ExtractSchedule, RenderSet, Extract};
 use bevy::render::extract_resource::ExtractResource;
 
 use crate::gpu::ffi::GPUParticle;
+use crate::gpu::pipeline::prepare_density_pipeline;
 use crate::cpu::sph2d::SPHState;
 
 #[derive(Resource, Clone)]
@@ -160,7 +161,9 @@ impl Plugin for GPUSPHPlugin {
                 extract_bind_group_layout))
 
             .add_systems(Render, 
-                prepare_particle_bind_group.in_set(RenderSet::Prepare));
+                (prepare_particle_bind_group.in_set(RenderSet::Prepare),
+                prepare_density_pipeline.in_set(RenderSet::Prepare)),
+            );
     }
 }
 

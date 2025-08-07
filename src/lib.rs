@@ -9,6 +9,7 @@ pub mod cpu {
 pub mod gpu {
     pub mod ffi;
     pub mod buffers;
+    pub mod pipeline;
 }
 
 #[derive(Component)]
