@@ -8,7 +8,7 @@ use bevy::render::{RenderApp, Render, ExtractSchedule, RenderSet, Extract};
 use bevy::render::extract_resource::ExtractResource;
 
 use crate::gpu::ffi::GPUParticle;
-use crate::gpu::pipeline::prepare_density_pipeline;
+use crate::gpu::pipeline::{prepare_density_pipeline, add_density_node_to_graph};
 use crate::cpu::sph2d::SPHState;
 
 #[derive(Resource, Clone)]
@@ -153,9 +153,10 @@ impl Plugin for GPUSPHPlugin {
             .add_systems(Startup, init_gpu_buffers)
             .add_systems(Startup, init_particle_bind_group_layout)
             .add_systems(Startup, queue_particle_buffer);
+        
+        let render_app = app.sub_app_mut(RenderApp);
 
-        app.sub_app_mut(RenderApp)
-
+        render_app
             .add_systems(ExtractSchedule, 
                 (extract_particle_buffer, 
                 extract_bind_group_layout))
@@ -164,7 +165,11 @@ impl Plugin for GPUSPHPlugin {
                 (prepare_particle_bind_group.in_set(RenderSet::Prepare),
                 prepare_density_pipeline.in_set(RenderSet::Prepare)),
             );
+
+        add_density_node_to_graph(render_app);
     }
 }
 
 
+/* used https://cocalc.com/github/bevyengine/bevy/blob/main/examples/shader/compute_shader_game_of_life.rs
+as my example here */
