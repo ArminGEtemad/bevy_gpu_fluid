@@ -188,7 +188,7 @@ pub fn readback_and_compare(
         return;
     }
 
-    *frames_seen = 4;
+    *frames_seen += 1; // increment
     info!("from readback: frames_seen= {}", *frames_seen);
 
     if *frames_seen < FRAMES_BEFORE_READBACK {
@@ -280,15 +280,9 @@ pub struct GPUSPHPlugin;
 impl Plugin for GPUSPHPlugin {
     fn build(&self, app: &mut App) {
         // App
-        app.add_systems(
-            Startup,
-            (
-                init_gpu_buffers,
-                init_readback_buffer,
-                init_particle_bind_group_layout,
-            ),
-        )
-        .add_systems(Update, queue_particle_buffer);
+        app.add_systems(Startup, (init_gpu_buffers, init_readback_buffer).chain())
+            .add_systems(Startup, init_particle_bind_group_layout)
+            .add_systems(Update, queue_particle_buffer);
 
         // Render
         let render_app = app.sub_app_mut(RenderApp);
