@@ -14,7 +14,9 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderContext;
 
-use crate::gpu::buffers::{ExtractedParticleBuffer, ParticleBindGroup, ParticleBindGroupLayout};
+use crate::gpu::buffers::{
+    ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup, ParticleBindGroupLayout,
+};
 
 // ==================== resources ======================================
 #[derive(Resource)]
@@ -54,6 +56,8 @@ pub fn prepare_density_pipeline(
     // where grabs the compiled GPU object.
     if let Some(id) = *pipeline_id {
         if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            info!("density_pipe_line is READY");
+
             commands.insert_resource(DensityPipeline(pipeline.clone()));
         }
     }
@@ -79,9 +83,25 @@ impl Node for DensityNode {
             return Ok(());
         };
 
+        // ==== debugging info ====
+        if world.get_resource::<DensityPipeline>().is_none() {
+            info!("Info Node: no pipeline");
+            return Ok(());
+        }
+        if world.get_resource::<ParticleBindGroup>().is_none() {
+            info!("Info Node: no particle bind group");
+            return Ok(());
+        }
+        if world.get_resource::<ExtractedParticleBuffer>().is_none() {
+            info!("Info Node: no particle buffer");
+            return Ok(());
+        }
+        // ========================
+
         // how many workgroups do we actually need?
         let n = extracted.num_particles.max(1);
         let workgroups = (n + 255) / 256; // for every 256 -> 1 workgroup
+        info!("Info Node: DISPATCH, N = {}, groups = {}", n, workgroups);
 
         let mut pass = render_context
             .command_encoder()
@@ -90,6 +110,18 @@ impl Node for DensityNode {
         pass.set_pipeline(&pipeline.0); // bind the compiled pipeline
         pass.set_bind_group(0, &bind_group.0, &[]); // inject the particle buffer
         pass.dispatch_workgroups(workgroups, 1, 1); // start the shader
+
+        drop(pass); // pass must end before encoding copies
+        let Some(readback) = world.get_resource::<ExtractedReadbackBuffer>() else {
+            return Ok(());
+        };
+        render_context.command_encoder().copy_buffer_to_buffer(
+            &extracted.buffer,
+            0,
+            &readback.buffer,
+            0,
+            readback.size_bytes,
+        );
 
         Ok(())
     }

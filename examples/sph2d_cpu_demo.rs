@@ -1,10 +1,11 @@
+use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy::sprite::Sprite;
-use bevy::input::ButtonInput;
 use bevy::window::PrimaryWindow;
 use glam::Vec2 as GVec2;
 
 use bevy_gpu_fluid::cpu::sph2d::SPHState;
+use bevy_gpu_fluid::gpu::buffers::readback_and_compare;
 
 const RENDER_SCALE: f32 = 100.0;
 const PARTICLE_SIZE: f32 = 15.0;
@@ -22,7 +23,7 @@ struct ParticleVisual(usize);
 #[derive(Resource, Default)]
 struct DragInput {
     screen_pos: Vec2,
-    delta: Vec2, // movement from a frame ago
+    delta: Vec2,        // movement from a frame ago
     pressed_down: bool, // left mouse button must be held
 }
 
@@ -40,21 +41,22 @@ fn main() {
         .insert_resource(DragInput::default())
         .insert_resource(ViewMode::DensityColor)
         .add_systems(Startup, setup)
-        .add_systems(Update, (drag_input,
-                              sph_step, 
-                              apply_drag,
-                              toggle_view,
-                              sync_particles,
-                             )
-                    )
+        .add_systems(
+            Update,
+            (
+                drag_input,
+                sph_step,
+                apply_drag,
+                toggle_view,
+                sync_particles,
+                readback_and_compare,
+            ),
+        )
         .run();
 }
 
 // toggle between the view modes
-fn toggle_view(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut view: ResMut<ViewMode>,
-) {
+fn toggle_view(keys: Res<ButtonInput<KeyCode>>, mut view: ResMut<ViewMode>) {
     if keys.just_pressed(KeyCode::Space) {
         *view = match *view {
             ViewMode::ConstColor => ViewMode::DensityColor,
@@ -92,7 +94,11 @@ fn drag_input(
     if let Some(pos) = window.cursor_position() {
         let pos = Vec2::new(pos.x, pos.y);
         if buttons.pressed(MouseButton::Left) {
-            drag.delta = if drag.pressed_down { pos - drag.screen_pos } else {Vec2::ZERO};
+            drag.delta = if drag.pressed_down {
+                pos - drag.screen_pos
+            } else {
+                Vec2::ZERO
+            };
             drag.screen_pos = pos;
             drag.pressed_down = true;
         } else {
@@ -103,7 +109,7 @@ fn drag_input(
 }
 
 fn apply_drag(
-    mut sph: ResMut<SPHState>, 
+    mut sph: ResMut<SPHState>,
     drag: Res<DragInput>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -117,16 +123,13 @@ fn apply_drag(
     };
 
     let win_w = window.resolution.width();
-    let win_h = window.resolution.height(); 
+    let win_h = window.resolution.height();
 
     let cursor_world = GVec2::new(
         (drag.screen_pos.x - win_w * 0.5) / RENDER_SCALE,
-        (- drag.screen_pos.y + win_h * 0.5) / RENDER_SCALE,
+        (-drag.screen_pos.y + win_h * 0.5) / RENDER_SCALE,
     );
-    let force_dir = GVec2::new(
-        drag.delta.x / RENDER_SCALE,
-        -drag.delta.y /RENDER_SCALE,
-    );
+    let force_dir = GVec2::new(drag.delta.x / RENDER_SCALE, -drag.delta.y / RENDER_SCALE);
 
     for p in &mut sph.particles {
         let to_particle = p.pos - cursor_world;
@@ -153,7 +156,11 @@ fn sync_particles(
         min_rho = min_rho.min(p.rho);
         max_rho = max_rho.max(p.rho);
     }
-    let inv_range = if max_rho > min_rho { 1.0 / (max_rho - min_rho) } else { 0.0 };
+    let inv_range = if max_rho > min_rho {
+        1.0 / (max_rho - min_rho)
+    } else {
+        0.0
+    };
 
     for (visual, mut transform, mut sprite) in query.iter_mut() {
         let particle = &sph.particles[visual.0];
@@ -174,10 +181,7 @@ fn sync_particles(
 }
 
 // spawn a camera and particles
-fn setup(
-    mut commands: Commands,
-    sph: Res<SPHState>,
-) {
+fn setup(mut commands: Commands, sph: Res<SPHState>) {
     commands.spawn(Camera2d::default());
 
     for (i, p) in sph.particles.iter().enumerate() {
@@ -187,9 +191,11 @@ fn setup(
                 custom_size: Some(Vec2::splat(PARTICLE_SIZE)),
                 ..Default::default()
             },
-            Transform::from_translation(Vec3::new(p.pos.x * RENDER_SCALE,
-                                                  p.pos.y * RENDER_SCALE,
-                                                  0.0)),
+            Transform::from_translation(Vec3::new(
+                p.pos.x * RENDER_SCALE,
+                p.pos.y * RENDER_SCALE,
+                0.0,
+            )),
             GlobalTransform::default(),
             ParticleVisual(i),
         ));
