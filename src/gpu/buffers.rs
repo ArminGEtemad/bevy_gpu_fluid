@@ -52,6 +52,12 @@ pub struct ExtractedReadbackBuffer {
     pub size_bytes: u64,
 }
 
+#[derive(Resource, Clone, Copy, Default)]
+pub struct AllowCopy(pub bool);
+
+#[derive(Resource, Clone, ExtractResource, Default)]
+pub struct ExtractedAllowCopy(pub bool);
+
 // =====================================================================
 
 // ========================== systems ==================================
@@ -174,15 +180,24 @@ fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<Readbac
     });
 }
 
+fn init_allow_copy(mut commands: Commands) {
+    commands.insert_resource(AllowCopy(true));
+}
+
+fn extract_allow_copy(mut commands: Commands, allow: Extract<Res<AllowCopy>>) {
+    commands.insert_resource(ExtractedAllowCopy(allow.0));
+}
+
 // comparison between GPU results and CPU
 pub fn readback_and_compare(
     render_device: Res<RenderDevice>,
     readback: Res<ReadbackBuffer>,
     sph: Res<SPHState>,
+    mut allow_copy: ResMut<AllowCopy>,
     mut done: Local<bool>,
     mut frames_seen: Local<u32>,
 ) {
-    const FRAMES_BEFORE_READBACK: u32 = 60; // just to get a fast response
+    const FRAMES_BEFORE_READBACK: u32 = 6; // just to get a fast response
 
     if *done {
         return;
@@ -194,6 +209,8 @@ pub fn readback_and_compare(
     if *frames_seen < FRAMES_BEFORE_READBACK {
         return;
     }
+
+    allow_copy.0 = false;
 
     let slice = readback.buffer.slice(..);
     let status = Arc::new(AtomicU8::new(0)); // on gpu (another thread) -> atomicity is crucial
@@ -280,9 +297,19 @@ pub struct GPUSPHPlugin;
 impl Plugin for GPUSPHPlugin {
     fn build(&self, app: &mut App) {
         // App
-        app.add_systems(Startup, (init_gpu_buffers, init_readback_buffer).chain())
-            .add_systems(Startup, init_particle_bind_group_layout)
-            .add_systems(Update, queue_particle_buffer);
+        app.add_systems(
+            Startup,
+            (
+                init_gpu_buffers,
+                init_readback_buffer,
+                init_particle_bind_group_layout,
+                init_allow_copy,
+            )
+                .chain(),
+        )
+        //.add_systems(Startup, init_particle_bind_group_layout)
+        //.add_systems(Startup, init_allow_copy)
+        .add_systems(Update, queue_particle_buffer);
 
         // Render
         let render_app = app.sub_app_mut(RenderApp);
@@ -293,6 +320,7 @@ impl Plugin for GPUSPHPlugin {
                     extract_particle_buffer,
                     extract_bind_group_layout,
                     extract_readback_buffer,
+                    extract_allow_copy,
                 ),
             )
             .add_systems(

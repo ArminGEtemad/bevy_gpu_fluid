@@ -15,7 +15,8 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::RenderContext;
 
 use crate::gpu::buffers::{
-    ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup, ParticleBindGroupLayout,
+    ExtractedAllowCopy, ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup,
+    ParticleBindGroupLayout,
 };
 
 // ==================== resources ======================================
@@ -115,13 +116,27 @@ impl Node for DensityNode {
         let Some(readback) = world.get_resource::<ExtractedReadbackBuffer>() else {
             return Ok(());
         };
-        render_context.command_encoder().copy_buffer_to_buffer(
-            &extracted.buffer,
-            0,
-            &readback.buffer,
-            0,
-            readback.size_bytes,
-        );
+
+        let allow_copy = world
+            .get_resource::<ExtractedAllowCopy>()
+            .map(|f| f.0)
+            .unwrap_or(true);
+
+        if allow_copy {
+            render_context.command_encoder().copy_buffer_to_buffer(
+                &extracted.buffer,
+                0,
+                &readback.buffer,
+                0,
+                readback.size_bytes,
+            );
+            info!(
+                "Info Node: COPY particles -> readback ({} bytes)",
+                readback.size_bytes
+            );
+        } else {
+            info!("Info Node: copy is SKIPPED");
+        }
 
         Ok(())
     }
