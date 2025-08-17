@@ -1,58 +1,36 @@
 /* used https://docs.rs/bevy/latest/bevy/render/render_resource/struct.ComputePass.html?utm_source=chatgpt.com
-as my source for computepass */ 
+as my source for computepass */
 
 use std::borrow::Cow;
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{
-    CachedComputePipelineId, ComputePipeline, ComputePipelineDescriptor, PipelineCache,
-    PushConstantRange, ShaderDefVal, ComputePassDescriptor,
-};
 use bevy::render::graph::CameraDriverLabel;
 use bevy::render::render_graph::{
-    self as render_graph, Node, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel,
+    Node, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel,
+};
+use bevy::render::render_resource::{
+    CachedComputePipelineId, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor,
+    PipelineCache, PushConstantRange, ShaderDefVal,
 };
 use bevy::render::renderer::RenderContext;
 
-use crate::gpu::buffers::{ParticleBindGroupLayout, ParticleBindGroup, ExtractedParticleBuffer};
+use crate::gpu::buffers::{
+    ExtractedAllowCopy, ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup,
+    ParticleBindGroupLayout,
+};
 
-
+// ==================== resources ======================================
 #[derive(Resource)]
 pub struct DensityPipeline(pub ComputePipeline);
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct DensityPassLabel;
-
 #[derive(Default)]
 struct DensityNode;
 
-impl Node for DensityNode {
-    fn run(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
-    ) -> Result<(), NodeRunError> {
-        // return because the calculations doesn't exist yet
-        let Some(pipeline) = world.get_resource::<DensityPipeline>() else { return Ok(()); };
-        let Some(bind_group) = world.get_resource::<ParticleBindGroup>() else { return Ok(()); };
-        let Some(extracted) = world.get_resource::<ExtractedParticleBuffer>() else { return Ok(()); };
+// =====================================================================
 
-        // how many workgroups do we actually need?
-        let n = extracted.num_particles.max(1);
-        let workgroups = (n + 255) / 256;
-
-        let mut pass = render_context
-            .command_encoder()
-            .begin_compute_pass(&ComputePassDescriptor::default());
-        
-        pass.set_pipeline(&pipeline.0);
-        pass.set_bind_group(0, &bind_group.0, &[]);
-        pass.dispatch_workgroups(workgroups, 1, 1);
-
-        Ok(())
-    }
-}
+// ========================== systems ==================================
 
 pub fn prepare_density_pipeline(
     mut commands: Commands,
@@ -79,8 +57,88 @@ pub fn prepare_density_pipeline(
     // where grabs the compiled GPU object.
     if let Some(id) = *pipeline_id {
         if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            info!("density_pipe_line is READY");
+
             commands.insert_resource(DensityPipeline(pipeline.clone()));
         }
+    }
+}
+
+// dispatch compute shader
+
+impl Node for DensityNode {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        // return because the calculations doesn't exist yet
+        let Some(pipeline) = world.get_resource::<DensityPipeline>() else {
+            return Ok(());
+        };
+        let Some(bind_group) = world.get_resource::<ParticleBindGroup>() else {
+            return Ok(());
+        };
+        let Some(extracted) = world.get_resource::<ExtractedParticleBuffer>() else {
+            return Ok(());
+        };
+
+        // ==== debugging info ====
+        if world.get_resource::<DensityPipeline>().is_none() {
+            info!("Info Node: no pipeline");
+            return Ok(());
+        }
+        if world.get_resource::<ParticleBindGroup>().is_none() {
+            info!("Info Node: no particle bind group");
+            return Ok(());
+        }
+        if world.get_resource::<ExtractedParticleBuffer>().is_none() {
+            info!("Info Node: no particle buffer");
+            return Ok(());
+        }
+        // ========================
+
+        // how many workgroups do we actually need?
+        let n = extracted.num_particles.max(1);
+        let workgroups = (n + 255) / 256; // for every 256 -> 1 workgroup
+        info!("Info Node: DISPATCH, N = {}, groups = {}", n, workgroups);
+
+        let mut pass = render_context
+            .command_encoder()
+            .begin_compute_pass(&ComputePassDescriptor::default());
+
+        pass.set_pipeline(&pipeline.0); // bind the compiled pipeline
+        pass.set_bind_group(0, &bind_group.0, &[]); // inject the particle buffer
+        pass.dispatch_workgroups(workgroups, 1, 1); // start the shader
+
+        drop(pass); // pass must end before encoding copies
+        let Some(readback) = world.get_resource::<ExtractedReadbackBuffer>() else {
+            return Ok(());
+        };
+
+        let allow_copy = world
+            .get_resource::<ExtractedAllowCopy>()
+            .map(|f| f.0)
+            .unwrap_or(true);
+
+        if allow_copy {
+            render_context.command_encoder().copy_buffer_to_buffer(
+                &extracted.buffer,
+                0,
+                &readback.buffer,
+                0,
+                readback.size_bytes,
+            );
+            info!(
+                "Info Node: COPY particles -> readback ({} bytes)",
+                readback.size_bytes
+            );
+        } else {
+            info!("Info Node: copy is SKIPPED");
+        }
+
+        Ok(())
     }
 }
 
