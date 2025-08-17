@@ -197,7 +197,7 @@ pub fn readback_and_compare(
     mut done: Local<bool>,
     mut frames_seen: Local<u32>,
 ) {
-    const FRAMES_BEFORE_READBACK: u32 = 6; // just to get a fast response
+    const FRAMES_BEFORE_READBACK: u32 = 10; // just to get a fast response
 
     if *done {
         return;
