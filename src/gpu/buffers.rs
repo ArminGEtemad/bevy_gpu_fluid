@@ -13,7 +13,9 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::GPUParticle;
-use crate::gpu::pipeline::{add_density_node_to_graph, prepare_density_pipeline};
+use crate::gpu::pipeline::{
+    add_density_node_to_graph, prepare_density_pipeline, prepare_pressure_pipeline,
+};
 
 // ==================== resources ======================================
 
@@ -197,7 +199,7 @@ pub fn readback_and_compare(
     mut done: Local<bool>,
     mut frames_seen: Local<u32>,
 ) {
-    const FRAMES_BEFORE_READBACK: u32 = 10; // just to get a fast response
+    const FRAMES_BEFORE_READBACK: u32 = 60; // just to get a fast response
 
     if *done {
         return;
@@ -231,6 +233,8 @@ pub fn readback_and_compare(
     let data = slice.get_mapped_range();
     let gpu_particles: &[GPUParticle] = bytemuck::cast_slice(&data);
 
+    // ----------------------------- debug only ---------------------
+
     info!(
         "GPU rho head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
         gpu_particles[0].rho,
@@ -250,8 +254,30 @@ pub fn readback_and_compare(
             max_rel = rel;
         }
     }
-
     info!("GPU density max relatice error: {:.3}%", max_rel * 100.0);
+
+    info!(
+        "GPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
+        gpu_particles[0].p,
+        gpu_particles[1].p,
+        gpu_particles[2].p,
+        gpu_particles[3].p,
+        gpu_particles[4].p,
+    );
+
+    let mut max_rel_p: f32 = 0.0;
+    for (i, cpu_p) in sph.particles.iter().enumerate() {
+        let a = cpu_p.p;
+        let b = gpu_particles[i].p;
+        let denom = a.abs().max(1e-6);
+        let rel = ((b - a) / denom).abs();
+        if rel > max_rel_p {
+            max_rel_p = rel;
+        }
+    }
+    info!("GPU pressure max relatice error: {:.3}%", max_rel_p * 100.0);
+
+    // ----------------------------------------------------------------
 
     // marking done
     drop(data);
@@ -328,6 +354,7 @@ impl Plugin for GPUSPHPlugin {
                 (
                     prepare_particle_bind_group.in_set(RenderSet::Prepare),
                     prepare_density_pipeline.in_set(RenderSet::Prepare),
+                    prepare_pressure_pipeline.in_set(RenderSet::Prepare),
                 ),
             );
 

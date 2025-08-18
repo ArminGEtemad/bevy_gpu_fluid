@@ -15,6 +15,8 @@ var<storage, read_write> particles : ParticleBuffer;
 const PI : f32 = 3.141592653589793;
 const H : f32 = 0.045; 
 const MASS : f32 = 1.6;
+const RHO0 : f32 = 1000.0;
+const K : f32 = 3.0;
 
 const H2 : f32 = H * H;
 const H4 : f32 = H2 * H2;
@@ -50,4 +52,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     particles.data[i].rho = rho_i;
+}
+
+// pressure from density
+@compute @workgroup_size(256)
+fn pressure_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i: u32 = gid.x;
+    let n: u32 = arrayLength(&particles.data);
+    if i >= n { return; }
+
+    let rho_i = particles.data[i].rho;
+
+    let p_i = K * (rho_i - RHO0);
+
+    particles.data[i].p = p_i;
 }

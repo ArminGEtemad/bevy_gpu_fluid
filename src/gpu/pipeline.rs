@@ -23,6 +23,9 @@ use crate::gpu::buffers::{
 #[derive(Resource)]
 pub struct DensityPipeline(pub ComputePipeline);
 
+#[derive(Resource)]
+pub struct PressurePipeline(pub ComputePipeline);
+
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct DensityPassLabel;
 #[derive(Default)]
@@ -60,6 +63,36 @@ pub fn prepare_density_pipeline(
             info!("density_pipe_line is READY");
 
             commands.insert_resource(DensityPipeline(pipeline.clone()));
+        }
+    }
+}
+
+pub fn prepare_pressure_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Res<ParticleBindGroupLayout>,
+    mut pipeline_id: Local<Option<CachedComputePipelineId>>,
+    assets: Res<AssetServer>,
+) {
+    if pipeline_id.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/sph_density.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("sph_pressure_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            push_constant_ranges: Vec::<PushConstantRange>::new(),
+            shader,
+            shader_defs: Vec::<ShaderDefVal>::new(),
+            entry_point: Cow::from("pressure_main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
+        return; // waits for compilation
+    }
+
+    // where grabs the compiled GPU object.
+    if let Some(id) = *pipeline_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            commands.insert_resource(PressurePipeline(pipeline.clone()));
         }
     }
 }
@@ -111,6 +144,15 @@ impl Node for DensityNode {
         pass.set_pipeline(&pipeline.0); // bind the compiled pipeline
         pass.set_bind_group(0, &bind_group.0, &[]); // inject the particle buffer
         pass.dispatch_workgroups(workgroups, 1, 1); // start the shader
+
+        if let Some(pressure) = world.get_resource::<PressurePipeline>() {
+            pass.set_pipeline(&pressure.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH pressure N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: pressure SKIPPED (pipeline not working/not ready)");
+        }
 
         drop(pass); // pass must end before encoding copies
         let Some(readback) = world.get_resource::<ExtractedReadbackBuffer>() else {
