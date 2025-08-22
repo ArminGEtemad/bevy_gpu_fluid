@@ -14,7 +14,8 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::GPUParticle;
 use crate::gpu::pipeline::{
-    add_density_node_to_graph, prepare_density_pipeline, prepare_pressure_pipeline,
+    add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
+    prepare_integrate_pipeline, prepare_pressure_pipeline,
 };
 
 // ==================== resources ======================================
@@ -103,6 +104,7 @@ fn queue_particle_buffer(
         gpu_particles.push(GPUParticle {
             pos: [particle.pos.x, particle.pos.y],
             vel: [particle.vel.x, particle.vel.y],
+            acc: [particle.acc.x, particle.acc.y],
             rho: particle.rho,
             p: particle.p,
         });
@@ -277,6 +279,110 @@ pub fn readback_and_compare(
     }
     info!("GPU pressure max relatice error: {:.3}%", max_rel_p * 100.0);
 
+    // Print both CPU and GPU acc for a quick eyeball check
+    info!(
+        "CPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
+        sph.particles[0].acc.x,
+        sph.particles[0].acc.y,
+        sph.particles[1].acc.x,
+        sph.particles[1].acc.y,
+        sph.particles[2].acc.x,
+        sph.particles[2].acc.y,
+        sph.particles[3].acc.x,
+        sph.particles[3].acc.y,
+        sph.particles[4].acc.x,
+        sph.particles[4].acc.y,
+    );
+
+    info!(
+        "GPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
+        gpu_particles[0].acc[0],
+        gpu_particles[0].acc[1],
+        gpu_particles[1].acc[0],
+        gpu_particles[1].acc[1],
+        gpu_particles[2].acc[0],
+        gpu_particles[2].acc[1],
+        gpu_particles[3].acc[0],
+        gpu_particles[3].acc[1],
+        gpu_particles[4].acc[0],
+        gpu_particles[4].acc[1],
+    );
+
+    // Vector relative error with an epsilon to avoid divide-by-near-zero
+    let mut max_rel_acc = 0.0f32;
+    let mut max_abs_acc = 0.0f32;
+    for (i, cpu_p) in sph.particles.iter().enumerate() {
+        let cpu = glam::Vec2::new(cpu_p.acc.x, cpu_p.acc.y);
+        let gpu = glam::Vec2::new(gpu_particles[i].acc[0], gpu_particles[i].acc[1]);
+
+        let diff = (gpu - cpu).length();
+        let denom = cpu.length().max(1e-3); // epsilon to avoid huge % when cpu≈0
+        let rel = diff / denom;
+
+        max_rel_acc = max_rel_acc.max(rel);
+        max_abs_acc = max_abs_acc.max(diff);
+    }
+    info!(
+        "GPU acceleration max relative error: {:.3}%",
+        max_rel_acc * 100.0
+    );
+    info!("GPU acceleration max absolute error: {:.3}", max_abs_acc);
+
+    info!(
+        "GPU pos head: [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}]",
+        gpu_particles[0].pos[0],
+        gpu_particles[0].pos[1],
+        gpu_particles[1].pos[0],
+        gpu_particles[1].pos[1],
+        gpu_particles[2].pos[0],
+        gpu_particles[2].pos[1],
+        gpu_particles[3].pos[0],
+        gpu_particles[3].pos[1],
+        gpu_particles[4].pos[0],
+        gpu_particles[4].pos[1],
+    );
+    info!(
+        "GPU vel head: [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}]",
+        gpu_particles[0].vel[0],
+        gpu_particles[0].vel[1],
+        gpu_particles[1].vel[0],
+        gpu_particles[1].vel[1],
+        gpu_particles[2].vel[0],
+        gpu_particles[2].vel[1],
+        gpu_particles[3].vel[0],
+        gpu_particles[3].vel[1],
+        gpu_particles[4].vel[0],
+        gpu_particles[4].vel[1],
+    );
+
+    // vector relative errors with epsilon
+    let mut max_rel_pos = 0.0f32;
+    let mut max_rel_vel = 0.0f32;
+
+    for (i, cpu_p) in sph.particles.iter().enumerate() {
+        let cpu_pos = glam::Vec2::new(cpu_p.pos.x, cpu_p.pos.y);
+        let cpu_vel = glam::Vec2::new(cpu_p.vel.x, cpu_p.vel.y);
+        let gpu_pos = glam::Vec2::new(gpu_particles[i].pos[0], gpu_particles[i].pos[1]);
+        let gpu_vel = glam::Vec2::new(gpu_particles[i].vel[0], gpu_particles[i].vel[1]);
+
+        let pos_diff = (gpu_pos - cpu_pos).length();
+        let vel_diff = (gpu_vel - cpu_vel).length();
+        let pos_rel = pos_diff / cpu_pos.length().max(1e-6);
+        let vel_rel = vel_diff / cpu_vel.length().max(1e-6);
+
+        max_rel_pos = max_rel_pos.max(pos_rel);
+        max_rel_vel = max_rel_vel.max(vel_rel);
+    }
+
+    info!(
+        "GPU position max relative error: {:.3}%",
+        max_rel_pos * 100.0
+    );
+    info!(
+        "GPU velocity max relative error: {:.3}%",
+        max_rel_vel * 100.0
+    );
+
     // ----------------------------------------------------------------
 
     // marking done
@@ -295,6 +401,7 @@ impl ParticleBuffers {
             gpu_particles.push(GPUParticle {
                 pos: [particle.pos.x, particle.pos.y],
                 vel: [particle.vel.x, particle.vel.y],
+                acc: [particle.acc.x, particle.acc.y],
                 rho: particle.rho,
                 p: particle.p,
             });
@@ -355,6 +462,8 @@ impl Plugin for GPUSPHPlugin {
                     prepare_particle_bind_group.in_set(RenderSet::Prepare),
                     prepare_density_pipeline.in_set(RenderSet::Prepare),
                     prepare_pressure_pipeline.in_set(RenderSet::Prepare),
+                    prepare_forces_pipeline.in_set(RenderSet::Prepare),
+                    prepare_integrate_pipeline.in_set(RenderSet::Prepare),
                 ),
             );
 

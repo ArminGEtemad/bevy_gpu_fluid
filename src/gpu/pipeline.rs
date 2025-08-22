@@ -26,6 +26,12 @@ pub struct DensityPipeline(pub ComputePipeline);
 #[derive(Resource)]
 pub struct PressurePipeline(pub ComputePipeline);
 
+#[derive(Resource)]
+pub struct ForcesPipeline(pub ComputePipeline);
+
+#[derive(Resource)]
+pub struct IntegratePipeline(pub ComputePipeline);
+
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct DensityPassLabel;
 #[derive(Default)]
@@ -97,6 +103,62 @@ pub fn prepare_pressure_pipeline(
     }
 }
 
+pub fn prepare_forces_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Res<ParticleBindGroupLayout>,
+    mut pipeline_id: Local<Option<CachedComputePipelineId>>,
+    assets: Res<AssetServer>,
+) {
+    if pipeline_id.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/sph_density.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("sph_forces_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            shader,
+            entry_point: Cow::Borrowed("forces_main"),
+            push_constant_ranges: vec![],
+            shader_defs: vec![],
+            zero_initialize_workgroup_memory: false,
+        };
+        *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
+        return;
+    }
+    if let Some(id) = *pipeline_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            commands.insert_resource(ForcesPipeline(pipeline.clone()));
+        }
+    }
+}
+
+pub fn prepare_integrate_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Res<ParticleBindGroupLayout>,
+    mut pipeline_id: Local<Option<CachedComputePipelineId>>,
+    assets: Res<AssetServer>,
+) {
+    if pipeline_id.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/sph_density.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("sph_integrate_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            shader,
+            entry_point: Cow::Borrowed("integrate_main"),
+            push_constant_ranges: vec![],
+            shader_defs: vec![],
+            zero_initialize_workgroup_memory: false,
+        };
+        *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
+        return;
+    }
+    if let Some(id) = *pipeline_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            commands.insert_resource(IntegratePipeline(pipeline.clone()));
+        }
+    }
+}
+
 // dispatch compute shader
 
 impl Node for DensityNode {
@@ -152,6 +214,24 @@ impl Node for DensityNode {
             info!("Info Node: DISPATCH pressure N = {n}, groups = {workgroups}");
         } else {
             info!("Info Node: pressure SKIPPED (pipeline not working/not ready)");
+        }
+
+        if let Some(forces) = world.get_resource::<ForcesPipeline>() {
+            pass.set_pipeline(&forces.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH forces N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: forces SKIPPED (pipeline not working/not ready)");
+        }
+
+        if let Some(integrate) = world.get_resource::<IntegratePipeline>() {
+            pass.set_pipeline(&integrate.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH integrate N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: integrate SKIPPED (pipeline not working/not ready)");
         }
 
         drop(pass); // pass must end before encoding copies
