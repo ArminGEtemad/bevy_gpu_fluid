@@ -30,46 +30,63 @@ var<storage, read> cell_entries : array<u32>;
 @group(0) @binding(3)
 var<uniform> grid : GridParams;
 
+struct IntegrateParams {
+    dt: f32,
+    x_min: f32,
+    x_max: f32,
+    bounce: f32,
+};
+
+@group(0) @binding(4)
+var<uniform> integ : IntegrateParams;
+
 const PI : f32 = 3.141592653589793;
-const H : f32 = 0.045;
 const MASS : f32 = 1.6;
 const RHO0 : f32 = 1000.0;
-const K : f32 = 3.0;
-const MU : f32 = 0.2;
-const G : vec2<f32> = vec2<f32>(0.0, -9.81);
-
-const H2 : f32 = H * H;
-const H4 : f32 = H2 * H2;
-const H8 : f32 = H4 * H4;
-
-const POLY6_2D      : f32 =  4.0 / (PI * H8);
-const SPIKY_GRAD_2D : f32 = -10.0 / (PI * pow(H, 5.0));
-const VISC_LAP_2D   : f32 =  40.0 / (PI * pow(H, 5.0));
+const K    : f32 = 3.0;
+const MU   : f32 = 0.2;
+const G    : vec2<f32> = vec2<f32>(0.0, -9.81);
 
 // ---------------- kernels --------------------
 
 fn w_poly6(r2: f32) -> f32 {
-    if r2 >= 0.0 && r2 <= H2 {
-        let k = H2 - r2;
-        return POLY6_2D * k * k * k;
+    let h = grid.cell_size;
+    let h2 = h * h;
+    if r2 >= 0.0 && r2 <= h2 {
+
+        let h4 = h2 * h2;
+        let h8 = h4 * h4;
+        let coeff = 4.0 / (PI * h8);
+        let k = h2 - r2;
+        return coeff * k * k * k;
     }
     return 0.0;
 }
 
 fn grad_spiky_kernel(r: vec2<f32>) -> vec2<f32> {
+    let h = grid.cell_size;
     let r_len = length(r);
-    if r_len == 0.0 || r_len >= H {
+    if r_len == 0.0 || r_len >= h {
         return vec2<f32>(0.0, 0.0);
     }
-    let factor = SPIKY_GRAD_2D * (H - r_len) * (H - r_len);
+
+    let h2 = h * h;
+    let h5 = h2 * h2 * h;
+    let coeff = -10.0 / (PI * h5);
+    let factor = coeff * (h - r_len) * (h - r_len);
     return factor * (r / r_len);
 }
 
 fn laplacian_visc(r_len: f32) -> f32 {
-    if r_len == 0.0 || r_len >= H {
+    let h = grid.cell_size;
+    if r_len == 0.0 || r_len >= h {
         return 0.0;
     }
-    return VISC_LAP_2D * (H - r_len);
+
+    let h2 = h * h;
+    let h5 = h2 * h2 * h;
+    let coeff = 40.0 / (PI * h5);
+    return coeff * (h - r_len);
 }
 
 // density 
@@ -94,6 +111,8 @@ fn cell_id(ix: i32, iy: i32) -> u32 {
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
+    let h = grid.cell_size;
+    let h2 = h * h;
     let n = arrayLength(&particles.data);
     if i >= n { return; }
 
@@ -127,7 +146,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let j = cell_entries[k];
                     let rvec = xi - particles.data[j].pos;
                     let r2 = dot(rvec, rvec);
-                    if r2 < H2 {
+                    if r2 < h2 {
                         rho += MASS * w_poly6(r2);
                     }
                     k = k + 1u;
@@ -157,6 +176,8 @@ fn pressure_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(256)
 fn forces_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
+    let h = grid.cell_size;
+    let h2 = h * h;
     let n = arrayLength(&particles.data);
     if i >= n { return; }
 
@@ -199,14 +220,12 @@ fn forces_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                         let rvec = xi - xj;
                         let r2 = dot(rvec, rvec);
-                        if r2 < H2 {
+                        if r2 < h2 {
                             let r_len = sqrt(max(r2, 1e-12));
 
-                            // pressure term: -m (pi + pj) / (2 rho_j) ∇W_spiky
                             let grad = grad_spiky_kernel(rvec);
                             let a_p = -MASS * (pi + pj) / (2.0 * rhoj) * grad;
 
-                            // viscosity term: mu * m * (vj - vi) / rho_j * ∇²W_visc
                             let lap = laplacian_visc(r_len);
                             let a_v = MU * MASS * (vj - vi) / rhoj * lap;
 
@@ -227,4 +246,32 @@ fn forces_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     acc_i += G;
 
     particles.data[i].acc = acc_i;
+}
+
+@compute @workgroup_size(256)
+fn integrate_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&particles.data);
+    if i >= n { return; }
+
+    var p = particles.data[i];
+
+    p.vel += p.acc * integ.dt;
+    p.pos += p.vel * integ.dt;
+
+    // boundaries (match CPU)
+    if p.pos.y < 0.0 {
+        p.pos.y = 0.0;
+        p.vel.y *= integ.bounce;
+    }
+    if p.pos.x > integ.x_max {
+        p.pos.x = integ.x_max;
+        p.vel.x *= integ.bounce;
+    }
+    if p.pos.x < integ.x_min {
+        p.pos.x = integ.x_min;
+        p.vel.x *= integ.bounce;
+    }
+
+    particles.data[i] = p;
 }

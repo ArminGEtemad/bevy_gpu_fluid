@@ -21,3 +21,12 @@ pub struct GridParams {
     pub _pad1: [u32; 2], // 16B alignment
 }
 // 16B alignment for uniform buffers
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct IntegrateParams {
+    pub dt: f32,
+    pub x_min: f32,
+    pub x_max: f32,
+    pub bounce: f32, // mast be negative
+}

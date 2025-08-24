@@ -78,6 +78,16 @@ pub struct ExtractedGrid {
     pub entries_buf: Buffer,
 }
 
+#[derive(Resource)]
+pub struct IntegrateParamsBuffer {
+    pub buffer: Buffer,
+}
+
+#[derive(Resource, Clone, ExtractResource)]
+pub struct ExtractedIntegrateParamsBuffer {
+    pub buffer: Buffer,
+}
+
 // =====================================================================
 
 // ========================== systems ==================================
@@ -129,6 +139,17 @@ fn init_particle_bind_group_layout(mut commands: Commands, render_device: Res<Re
             // binding 3: grid params (uniform)
             BindGroupLayoutEntry {
                 binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // binding 4: integrate params (uniform)
+            BindGroupLayoutEntry {
+                binding: 4,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
@@ -216,7 +237,8 @@ fn prepare_particle_bind_group(
     render_device: Res<RenderDevice>,
     layout: Res<ParticleBindGroupLayout>,
     extracted: Res<ExtractedParticleBuffer>,
-    grid: Res<ExtractedGrid>, // <-- add this
+    grid: Res<ExtractedGrid>,
+    integ: Res<ExtractedIntegrateParamsBuffer>,
 ) {
     let bind_group = render_device.create_bind_group(
         Some("particle_bind_group"),
@@ -237,6 +259,10 @@ fn prepare_particle_bind_group(
             BindGroupEntry {
                 binding: 3,
                 resource: grid.params_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: integ.buffer.as_entire_binding(),
             },
         ],
     );
@@ -425,6 +451,31 @@ pub fn update_grid_buffers(
     mut grid: ResMut<GridBuffers>,
 ) {
     grid.update(&render_device, &render_queue, &sph);
+}
+
+fn init_integrate_params_buffer(mut commands: Commands, render_device: Res<RenderDevice>) {
+    let params = crate::gpu::ffi::IntegrateParams {
+        dt: 0.0,
+        x_min: 0.0,
+        x_max: 0.0,
+        bounce: -0.5,
+    };
+    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("integrate_params_uniform"),
+        contents: bytemuck::bytes_of(&params),
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    });
+    commands.insert_resource(IntegrateParamsBuffer { buffer });
+}
+
+// extract to render-world
+fn extract_integrate_params_buffer(
+    mut commands: Commands,
+    ub: Extract<Res<IntegrateParamsBuffer>>,
+) {
+    commands.insert_resource(ExtractedIntegrateParamsBuffer {
+        buffer: ub.buffer.clone(),
+    });
 }
 
 // comparison between GPU results and CPU
@@ -631,6 +682,7 @@ impl Plugin for GPUSPHPlugin {
                 init_particle_bind_group_layout,
                 init_allow_copy,
                 init_grid_buffers,
+                init_integrate_params_buffer,
             )
                 .chain(),
         )
@@ -649,6 +701,7 @@ impl Plugin for GPUSPHPlugin {
                     extract_readback_buffer,
                     extract_allow_copy,
                     extract_grid_buffers,
+                    extract_integrate_params_buffer,
                 ),
             )
             .add_systems(
