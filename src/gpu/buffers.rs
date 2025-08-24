@@ -12,11 +12,12 @@ use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
-use crate::gpu::ffi::GPUParticle;
+use crate::gpu::ffi::{GPUParticle, GridParams};
 use crate::gpu::pipeline::{
     add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
-    prepare_integrate_pipeline, prepare_pressure_pipeline,
+    prepare_pressure_pipeline,
 };
+use glam::{IVec2, Vec2};
 
 // ==================== resources ======================================
 
@@ -60,6 +61,22 @@ pub struct AllowCopy(pub bool);
 
 #[derive(Resource, Clone, ExtractResource, Default)]
 pub struct ExtractedAllowCopy(pub bool);
+
+#[derive(Resource)]
+pub struct GridBuffers {
+    pub params_buf: Buffer,  // UNIFORM
+    pub starts_buf: Buffer,  // STORAGE
+    pub entries_buf: Buffer, // STORAGE
+    pub num_cells: usize,
+    pub num_particles: usize,
+}
+
+#[derive(Resource, Clone)]
+pub struct ExtractedGrid {
+    pub params_buf: Buffer,
+    pub starts_buf: Buffer,
+    pub entries_buf: Buffer,
+}
 
 // =====================================================================
 
@@ -192,6 +209,174 @@ fn extract_allow_copy(mut commands: Commands, allow: Extract<Res<AllowCopy>>) {
     commands.insert_resource(ExtractedAllowCopy(allow.0));
 }
 
+fn cell_ix(pos: Vec2, h: f32) -> IVec2 {
+    (pos / h).floor().as_ivec2()
+}
+
+fn build_compressed_grid(sph: &SPHState) -> (GridParams, Vec<u32>, Vec<u32>) {
+    let h = sph.h;
+
+    let mut min_c = IVec2::new(i32::MAX, i32::MAX);
+    let mut max_c = IVec2::new(i32::MIN, i32::MIN);
+    for p in &sph.particles {
+        let c = cell_ix(p.pos, h);
+        min_c = IVec2::new(min_c.x.min(c.x), min_c.y.min(c.y));
+        max_c = IVec2::new(max_c.x.max(c.x), max_c.y.max(c.y));
+    }
+    let dims = IVec2::new(max_c.x - min_c.x + 1, max_c.y - min_c.y + 1);
+    let nx = dims.x.max(1) as usize;
+    let ny = dims.y.max(1) as usize;
+    let num_cells = nx * ny;
+    let n = sph.particles.len();
+
+    let mut counts = vec![0u32; num_cells];
+    for (_i, p) in sph.particles.iter().enumerate() {
+        let c = cell_ix(p.pos, h);
+        let ix = (c.x - min_c.x) as usize;
+        let iy = (c.y - min_c.y) as usize;
+        let id = ix + iy * nx;
+        debug_assert!(id < num_cells);
+        counts[id] += 1;
+    }
+
+    let mut starts = vec![0u32; num_cells + 1];
+    for i in 0..num_cells {
+        starts[i + 1] = starts[i] + counts[i];
+    }
+
+    let mut offsets = starts.clone();
+    let mut entries = vec![0u32; n];
+    for (pi, p) in sph.particles.iter().enumerate() {
+        let c = cell_ix(p.pos, h);
+        let ix = (c.x - min_c.x) as usize;
+        let iy = (c.y - min_c.y) as usize;
+        let id = ix + iy * nx;
+        let dst = &mut offsets[id];
+        let idx = *dst as usize;
+        entries[idx] = pi as u32;
+        *dst += 1;
+    }
+
+    let params = GridParams {
+        min_world: [min_c.x as f32 * h, min_c.y as f32 * h],
+        cell_size: h,
+        _pad0: 0.0,
+        dims: [nx as u32, ny as u32],
+        _pad1: [0, 0],
+    };
+
+    (params, starts, entries)
+}
+
+impl GridBuffers {
+    pub fn new(render_device: &RenderDevice, sph: &SPHState) -> Self {
+        let (params, starts, entries) = build_compressed_grid(sph);
+
+        let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("Grid Params"),
+            contents: bytemuck::bytes_of(&params),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+
+        let starts_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("Grid Starts"),
+            contents: bytemuck::cast_slice(&starts),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        });
+
+        let entries_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("Grid entries"),
+            contents: bytemuck::cast_slice(&entries),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        });
+
+        info!(
+            "Grid Init: cells={} ({}x{}), starts.len={}, entries.len={}",
+            (params.dims[0] as usize) * (params.dims[1] as usize),
+            params.dims[0],
+            params.dims[1],
+            starts.len(),
+            entries.len()
+        );
+
+        Self {
+            params_buf,
+            starts_buf,
+            entries_buf,
+            num_cells: starts.len() - 1,
+            num_particles: entries.len(),
+        }
+    }
+
+    pub fn update(&mut self, render_device: &RenderDevice, queue: &RenderQueue, sph: &SPHState) {
+        let (params, starts, entries) = build_compressed_grid(sph);
+
+        let new_num_cells = starts.len() - 1;
+        let new_num_particles = entries.len();
+
+        if new_num_cells != self.num_cells {
+            self.starts_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("Grid Starts"),
+                contents: bytemuck::cast_slice(&starts),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            });
+            self.num_cells = new_num_cells;
+        } else {
+            queue.write_buffer(&self.starts_buf, 0, bytemuck::cast_slice(&starts));
+        }
+
+        if new_num_particles != self.num_particles {
+            self.entries_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("Grid Entries"),
+                contents: bytemuck::cast_slice(&entries),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            });
+            self.num_particles = new_num_particles;
+        } else {
+            queue.write_buffer(&self.entries_buf, 0, bytemuck::cast_slice(&entries));
+        }
+
+        queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let nx = params.dims[0];
+        let ny = params.dims[1];
+
+        info!(
+            "grid update: dims=({}x{}), cells={}, entries={}, starts[0..5]={:?}",
+            nx,
+            ny,
+            self.num_cells,
+            self.num_particles,
+            &starts[0..starts.len().min(5)]
+        );
+    }
+}
+
+pub fn extract_grid_buffers(mut commands: Commands, grid: Extract<Res<GridBuffers>>) {
+    commands.insert_resource(ExtractedGrid {
+        params_buf: grid.params_buf.clone(),
+        starts_buf: grid.starts_buf.clone(),
+        entries_buf: grid.entries_buf.clone(),
+    });
+}
+
+pub fn init_grid_buffers(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    sph: Res<SPHState>,
+) {
+    commands.insert_resource(GridBuffers::new(&render_device, &sph));
+}
+
+pub fn update_grid_buffers(
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    sph: Res<SPHState>,
+    mut grid: ResMut<GridBuffers>,
+) {
+    grid.update(&render_device, &render_queue, &sph);
+}
+
 // comparison between GPU results and CPU
 pub fn readback_and_compare(
     render_device: Res<RenderDevice>,
@@ -200,195 +385,153 @@ pub fn readback_and_compare(
     mut allow_copy: ResMut<AllowCopy>,
     mut done: Local<bool>,
     mut frames_seen: Local<u32>,
+    // simple local state: 0 = before arm, 1 = armed (map next frame), 2 = done
+    mut state: Local<u8>,
 ) {
-    const FRAMES_BEFORE_READBACK: u32 = 60; // just to get a fast response
+    const FRAMES_BEFORE_READBACK: u32 = 60;
 
     if *done {
         return;
     }
 
-    *frames_seen += 1; // increment
+    *frames_seen += 1;
     info!("from readback: frames_seen= {}", *frames_seen);
-
     if *frames_seen < FRAMES_BEFORE_READBACK {
         return;
     }
 
-    allow_copy.0 = false;
-
-    let slice = readback.buffer.slice(..);
-    let status = Arc::new(AtomicU8::new(0)); // on gpu (another thread) -> atomicity is crucial
-    let status_cb = Arc::clone(&status);
-
-    // status flag to know when the operation is done
-    slice.map_async(MapMode::Read, move |res| {
-        status_cb.store(if res.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
-    });
-
-    render_device.poll(Maintain::Wait);
-    match status.load(Ordering::SeqCst) {
-        1 => {}      // mapped OK
-        2 => return, // failed
-        _ => return, // not ready
-    }
-
-    let data = slice.get_mapped_range();
-    let gpu_particles: &[GPUParticle] = bytemuck::cast_slice(&data);
-
-    // ----------------------------- debug only ---------------------
-
-    info!(
-        "GPU rho head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
-        gpu_particles[0].rho,
-        gpu_particles[1].rho,
-        gpu_particles[2].rho,
-        gpu_particles[3].rho,
-        gpu_particles[4].rho,
-    );
-
-    let mut max_rel: f32 = 0.0;
-    for (i, cpu_p) in sph.particles.iter().enumerate() {
-        let a = cpu_p.rho;
-        let b = gpu_particles[i].rho;
-        let denom = a.abs().max(1e-6);
-        let rel = ((b - a) / denom).abs();
-        if rel > max_rel {
-            max_rel = rel;
+    match *state {
+        0 => {
+            // Phase A: tell render to stop copying, then bail this frame.
+            allow_copy.0 = false;
+            *state = 1;
+            return;
         }
-    }
-    info!("GPU density max relatice error: {:.3}%", max_rel * 100.0);
+        1 => {
+            // Phase B: safe to map now (render will skip copy this frame).
+            let slice = readback.buffer.slice(..);
 
-    info!(
-        "GPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
-        gpu_particles[0].p,
-        gpu_particles[1].p,
-        gpu_particles[2].p,
-        gpu_particles[3].p,
-        gpu_particles[4].p,
-    );
+            let status = Arc::new(AtomicU8::new(0)); // 0=pending, 1=ok, 2=err
+            let status_cb = Arc::clone(&status);
+            slice.map_async(MapMode::Read, move |res| {
+                status_cb.store(if res.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            });
 
-    let mut max_rel_p: f32 = 0.0;
-    for (i, cpu_p) in sph.particles.iter().enumerate() {
-        let a = cpu_p.p;
-        let b = gpu_particles[i].p;
-        let denom = a.abs().max(1e-6);
-        let rel = ((b - a) / denom).abs();
-        if rel > max_rel_p {
-            max_rel_p = rel;
+            // Wait until the callback flips status from 0.
+            loop {
+                render_device.poll(Maintain::Poll);
+                match status.load(Ordering::SeqCst) {
+                    0 => std::thread::yield_now(),
+                    1 => break,
+                    2 => {
+                        // mapping failed; make sure it's unmapped and stop trying
+                        readback.buffer.unmap();
+                        *done = true;
+                        *state = 2;
+                        return;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            // Read, compare, log
+            {
+                let data = slice.get_mapped_range();
+                let gpu_particles: &[GPUParticle] = bytemuck::cast_slice(&data);
+
+                // rho
+                info!(
+                    "GPU rho head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
+                    gpu_particles[0].rho,
+                    gpu_particles[1].rho,
+                    gpu_particles[2].rho,
+                    gpu_particles[3].rho,
+                    gpu_particles[4].rho,
+                );
+                let mut max_rel_rho = 0.0f32;
+                for (i, cpu_p) in sph.particles.iter().enumerate() {
+                    let a = cpu_p.rho;
+                    let b = gpu_particles[i].rho;
+                    let rel = ((b - a) / a.abs().max(1e-6)).abs();
+                    max_rel_rho = max_rel_rho.max(rel);
+                }
+                info!(
+                    "GPU density max relative error: {:.3}%",
+                    max_rel_rho * 100.0
+                );
+
+                // p
+                info!(
+                    "GPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
+                    gpu_particles[0].p,
+                    gpu_particles[1].p,
+                    gpu_particles[2].p,
+                    gpu_particles[3].p,
+                    gpu_particles[4].p,
+                );
+                let mut max_rel_p = 0.0f32;
+                for (i, cpu_p) in sph.particles.iter().enumerate() {
+                    let a = cpu_p.p;
+                    let b = gpu_particles[i].p;
+                    let rel = ((b - a) / a.abs().max(1e-6)).abs();
+                    max_rel_p = max_rel_p.max(rel);
+                }
+                info!("GPU pressure max relative error: {:.3}%", max_rel_p * 100.0);
+
+                // acc (vector norm)
+                info!(
+                    "CPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
+                    sph.particles[0].acc.x,
+                    sph.particles[0].acc.y,
+                    sph.particles[1].acc.x,
+                    sph.particles[1].acc.y,
+                    sph.particles[2].acc.x,
+                    sph.particles[2].acc.y,
+                    sph.particles[3].acc.x,
+                    sph.particles[3].acc.y,
+                    sph.particles[4].acc.x,
+                    sph.particles[4].acc.y,
+                );
+                info!(
+                    "GPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
+                    gpu_particles[0].acc[0],
+                    gpu_particles[0].acc[1],
+                    gpu_particles[1].acc[0],
+                    gpu_particles[1].acc[1],
+                    gpu_particles[2].acc[0],
+                    gpu_particles[2].acc[1],
+                    gpu_particles[3].acc[0],
+                    gpu_particles[3].acc[1],
+                    gpu_particles[4].acc[0],
+                    gpu_particles[4].acc[1],
+                );
+
+                let mut max_rel_acc = 0.0f32;
+                let mut max_abs_acc = 0.0f32;
+                for (i, cpu_p) in sph.particles.iter().enumerate() {
+                    let cpu = glam::Vec2::new(cpu_p.acc.x, cpu_p.acc.y);
+                    let gpu = glam::Vec2::new(gpu_particles[i].acc[0], gpu_particles[i].acc[1]);
+                    let diff = (gpu - cpu).length();
+                    let denom = cpu.length().max(1e-3);
+                    max_rel_acc = max_rel_acc.max(diff / denom);
+                    max_abs_acc = max_abs_acc.max(diff);
+                }
+                info!(
+                    "GPU acceleration max relative error: {:.3}%",
+                    max_rel_acc * 100.0
+                );
+                info!("GPU acceleration max absolute error: {:.3}", max_abs_acc);
+
+                drop(data);
+            }
+
+            // Always unmap before returning
+            readback.buffer.unmap();
+            *done = true;
+            *state = 2;
         }
+        _ => {}
     }
-    info!("GPU pressure max relatice error: {:.3}%", max_rel_p * 100.0);
-
-    // Print both CPU and GPU acc for a quick eyeball check
-    info!(
-        "CPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
-        sph.particles[0].acc.x,
-        sph.particles[0].acc.y,
-        sph.particles[1].acc.x,
-        sph.particles[1].acc.y,
-        sph.particles[2].acc.x,
-        sph.particles[2].acc.y,
-        sph.particles[3].acc.x,
-        sph.particles[3].acc.y,
-        sph.particles[4].acc.x,
-        sph.particles[4].acc.y,
-    );
-
-    info!(
-        "GPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
-        gpu_particles[0].acc[0],
-        gpu_particles[0].acc[1],
-        gpu_particles[1].acc[0],
-        gpu_particles[1].acc[1],
-        gpu_particles[2].acc[0],
-        gpu_particles[2].acc[1],
-        gpu_particles[3].acc[0],
-        gpu_particles[3].acc[1],
-        gpu_particles[4].acc[0],
-        gpu_particles[4].acc[1],
-    );
-
-    // Vector relative error with an epsilon to avoid divide-by-near-zero
-    let mut max_rel_acc = 0.0f32;
-    let mut max_abs_acc = 0.0f32;
-    for (i, cpu_p) in sph.particles.iter().enumerate() {
-        let cpu = glam::Vec2::new(cpu_p.acc.x, cpu_p.acc.y);
-        let gpu = glam::Vec2::new(gpu_particles[i].acc[0], gpu_particles[i].acc[1]);
-
-        let diff = (gpu - cpu).length();
-        let denom = cpu.length().max(1e-3); // epsilon to avoid huge % when cpu≈0
-        let rel = diff / denom;
-
-        max_rel_acc = max_rel_acc.max(rel);
-        max_abs_acc = max_abs_acc.max(diff);
-    }
-    info!(
-        "GPU acceleration max relative error: {:.3}%",
-        max_rel_acc * 100.0
-    );
-    info!("GPU acceleration max absolute error: {:.3}", max_abs_acc);
-
-    info!(
-        "GPU pos head: [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}]",
-        gpu_particles[0].pos[0],
-        gpu_particles[0].pos[1],
-        gpu_particles[1].pos[0],
-        gpu_particles[1].pos[1],
-        gpu_particles[2].pos[0],
-        gpu_particles[2].pos[1],
-        gpu_particles[3].pos[0],
-        gpu_particles[3].pos[1],
-        gpu_particles[4].pos[0],
-        gpu_particles[4].pos[1],
-    );
-    info!(
-        "GPU vel head: [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}] [{:.3},{:.3}]",
-        gpu_particles[0].vel[0],
-        gpu_particles[0].vel[1],
-        gpu_particles[1].vel[0],
-        gpu_particles[1].vel[1],
-        gpu_particles[2].vel[0],
-        gpu_particles[2].vel[1],
-        gpu_particles[3].vel[0],
-        gpu_particles[3].vel[1],
-        gpu_particles[4].vel[0],
-        gpu_particles[4].vel[1],
-    );
-
-    // vector relative errors with epsilon
-    let mut max_rel_pos = 0.0f32;
-    let mut max_rel_vel = 0.0f32;
-
-    for (i, cpu_p) in sph.particles.iter().enumerate() {
-        let cpu_pos = glam::Vec2::new(cpu_p.pos.x, cpu_p.pos.y);
-        let cpu_vel = glam::Vec2::new(cpu_p.vel.x, cpu_p.vel.y);
-        let gpu_pos = glam::Vec2::new(gpu_particles[i].pos[0], gpu_particles[i].pos[1]);
-        let gpu_vel = glam::Vec2::new(gpu_particles[i].vel[0], gpu_particles[i].vel[1]);
-
-        let pos_diff = (gpu_pos - cpu_pos).length();
-        let vel_diff = (gpu_vel - cpu_vel).length();
-        let pos_rel = pos_diff / cpu_pos.length().max(1e-6);
-        let vel_rel = vel_diff / cpu_vel.length().max(1e-6);
-
-        max_rel_pos = max_rel_pos.max(pos_rel);
-        max_rel_vel = max_rel_vel.max(vel_rel);
-    }
-
-    info!(
-        "GPU position max relative error: {:.3}%",
-        max_rel_pos * 100.0
-    );
-    info!(
-        "GPU velocity max relative error: {:.3}%",
-        max_rel_vel * 100.0
-    );
-
-    // ----------------------------------------------------------------
-
-    // marking done
-    drop(data);
-    readback.buffer.unmap();
-    *done = true;
 }
 
 // Implementations
@@ -437,12 +580,13 @@ impl Plugin for GPUSPHPlugin {
                 init_readback_buffer,
                 init_particle_bind_group_layout,
                 init_allow_copy,
+                init_grid_buffers,
             )
                 .chain(),
         )
         //.add_systems(Startup, init_particle_bind_group_layout)
         //.add_systems(Startup, init_allow_copy)
-        .add_systems(Update, queue_particle_buffer);
+        .add_systems(Update, (queue_particle_buffer, update_grid_buffers));
 
         // Render
         let render_app = app.sub_app_mut(RenderApp);
@@ -454,6 +598,7 @@ impl Plugin for GPUSPHPlugin {
                     extract_bind_group_layout,
                     extract_readback_buffer,
                     extract_allow_copy,
+                    extract_grid_buffers,
                 ),
             )
             .add_systems(
@@ -463,7 +608,6 @@ impl Plugin for GPUSPHPlugin {
                     prepare_density_pipeline.in_set(RenderSet::Prepare),
                     prepare_pressure_pipeline.in_set(RenderSet::Prepare),
                     prepare_forces_pipeline.in_set(RenderSet::Prepare),
-                    prepare_integrate_pipeline.in_set(RenderSet::Prepare),
                 ),
             );
 
