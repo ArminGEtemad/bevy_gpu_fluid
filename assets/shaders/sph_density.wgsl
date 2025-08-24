@@ -13,6 +13,23 @@ struct ParticleBuffer {
 @group(0) @binding(0)
 var<storage, read_write> particles : ParticleBuffer;
 
+struct GridParams {
+    min_world: vec2<f32>,
+    cell_size: f32,
+    _pad0: f32,          // keep alignment in sync with Rust
+    dims: vec2<u32>,
+    _pad1: vec2<u32>,
+};
+
+@group(0) @binding(1)
+var<storage, read> cell_starts : array<u32>;
+
+@group(0) @binding(2)
+var<storage, read> cell_entries : array<u32>;
+
+@group(0) @binding(3)
+var<uniform> grid : GridParams;
+
 const PI : f32 = 3.141592653589793;
 const H : f32 = 0.045;
 const MASS : f32 = 1.6;
@@ -57,6 +74,23 @@ fn laplacian_visc(r_len: f32) -> f32 {
 
 // density 
 
+fn cell_of_pos(pos: vec2<f32>) -> vec2<i32> {
+    // cell index for the position (like CPU's floor(pos / h))
+    let c = vec2<i32>(floor(pos / grid.cell_size));
+
+    // recover the integer min cell from the uniform using round to avoid -ε issues
+    let origin = vec2<i32>(
+        i32(round(grid.min_world.x / grid.cell_size)),
+        i32(round(grid.min_world.y / grid.cell_size))
+    );
+
+    return c - origin;
+}
+
+fn cell_id(ix: i32, iy: i32) -> u32 {
+    return u32(ix) + u32(iy) * grid.dims.x;
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -66,15 +100,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let xi = particles.data[i].pos;
     var rho: f32 = 0.0;
 
-    var j: u32 = 0u;
+    let c0 = cell_of_pos(xi);
+    let nx = i32(grid.dims.x);
+    let ny = i32(grid.dims.y);
+
+    var oy: i32 = -1;
     loop {
-        if j >= n { break; }
-        let rvec = xi - particles.data[j].pos;
-        let r2 = dot(rvec, rvec);
-        if r2 < H2 {
-            rho += MASS * w_poly6(r2);
+        if oy > 1 { break; }
+        var ox: i32 = -1;
+        loop {
+            if ox > 1 { break; }
+
+            let cx_i = c0.x + ox;
+            let cy_i = c0.y + oy;
+
+            // skip cells outside the grid (no clamping -> no duplicates)
+            if cx_i >= 0 && cx_i < nx && cy_i >= 0 && cy_i < ny {
+                let cid = cell_id(cx_i, cy_i);
+
+                let start = cell_starts[cid];
+                let end = cell_starts[cid + 1u];
+
+                var k = start;
+                loop {
+                    if k >= end { break; }
+                    let j = cell_entries[k];
+                    let rvec = xi - particles.data[j].pos;
+                    let r2 = dot(rvec, rvec);
+                    if r2 < H2 {
+                        rho += MASS * w_poly6(r2);
+                    }
+                    k = k + 1u;
+                }
+            }
+
+            ox = ox + 1;
         }
-        j = j + 1u;
+        oy = oy + 1;
     }
 
     particles.data[i].rho = rho;
@@ -100,34 +162,65 @@ fn forces_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let xi = particles.data[i].pos;
     let vi = particles.data[i].vel;
-    let p_i = particles.data[i].p;
+    let pi = particles.data[i].p;
 
     var acc_i: vec2<f32> = vec2<f32>(0.0, 0.0);
 
-    var j: u32 = 0u;
+    // --- 3×3 neighbor cells (same as density) ---
+    let c0 = cell_of_pos(xi);
+    let nx = i32(grid.dims.x);
+    let ny = i32(grid.dims.y);
+
+    var oy: i32 = -1;
     loop {
-        if j >= n { break; }
-        if j != i {
-            let xj = particles.data[j].pos;
-            let vj = particles.data[j].vel;
-            let rhoj = particles.data[j].rho;
-            let pj = particles.data[j].p;
+        if oy > 1 { break; }
+        var ox: i32 = -1;
+        loop {
+            if ox > 1 { break; }
 
-            let rvec = xi - xj;
-            let r2 = dot(rvec, rvec);
-            if r2 < H2 {
-                let r_len = sqrt(max(r2, 1e-12));
+            let cx_i = c0.x + ox;
+            let cy_i = c0.y + oy;
 
-                let grad = grad_spiky_kernel(rvec);
-                let a_p = -MASS * (p_i + pj) / (2.0 * rhoj) * grad;
+            if cx_i >= 0 && cx_i < nx && cy_i >= 0 && cy_i < ny {
+                let cid = cell_id(cx_i, cy_i);
+                let start = cell_starts[cid];
+                let end = cell_starts[cid + 1u];
 
-                let lap = laplacian_visc(r_len);
-                let a_v = MU * MASS * (vj - vi) / rhoj * lap;
+                var k = start;
+                loop {
+                    if k >= end { break; }
+                    let j = cell_entries[k];
 
-                acc_i += a_p + a_v;
+                    if j != i {
+                        let xj = particles.data[j].pos;
+                        let vj = particles.data[j].vel;
+                        let rhoj = particles.data[j].rho;
+                        let pj = particles.data[j].p;
+
+                        let rvec = xi - xj;
+                        let r2 = dot(rvec, rvec);
+                        if r2 < H2 {
+                            let r_len = sqrt(max(r2, 1e-12));
+
+                            // pressure term: -m (pi + pj) / (2 rho_j) ∇W_spiky
+                            let grad = grad_spiky_kernel(rvec);
+                            let a_p = -MASS * (pi + pj) / (2.0 * rhoj) * grad;
+
+                            // viscosity term: mu * m * (vj - vi) / rho_j * ∇²W_visc
+                            let lap = laplacian_visc(r_len);
+                            let a_v = MU * MASS * (vj - vi) / rhoj * lap;
+
+                            acc_i += a_p + a_v;
+                        }
+                    }
+
+                    k = k + 1u;
+                }
             }
+
+            ox = ox + 1;
         }
-        j = j + 1u;
+        oy = oy + 1;
     }
 
     // gravity

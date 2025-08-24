@@ -92,16 +92,52 @@ fn init_gpu_buffers(mut commands: Commands, render_device: Res<RenderDevice>, sp
 fn init_particle_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
         Some("particle_bind_group_layout"),
-        &[BindGroupLayoutEntry {
-            binding: 0,
-            visibility: ShaderStages::COMPUTE,
-            ty: BindingType::Buffer {
-                ty: BufferBindingType::Storage { read_only: false },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        &[
+            // binding 0: particles (read_write)
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+            // binding 1: cell_starts (read-only)
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // binding 2: cell_entries (read-only)
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // binding 3: grid params (uniform)
+            BindGroupLayoutEntry {
+                binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
     );
     commands.insert_resource(ParticleBindGroupLayout(layout));
 }
@@ -180,18 +216,32 @@ fn prepare_particle_bind_group(
     render_device: Res<RenderDevice>,
     layout: Res<ParticleBindGroupLayout>,
     extracted: Res<ExtractedParticleBuffer>,
+    grid: Res<ExtractedGrid>, // <-- add this
 ) {
     let bind_group = render_device.create_bind_group(
         Some("particle_bind_group"),
         &layout.0,
-        &[BindGroupEntry {
-            binding: 0,
-            resource: extracted.buffer.as_entire_binding(),
-        }],
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: extracted.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: grid.starts_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: grid.entries_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: grid.params_buf.as_entire_binding(),
+            },
+        ],
     );
     commands.insert_resource(ParticleBindGroup(bind_group));
-
-    info!("particle_bind_group is READY")
+    info!("particle_bind_group is READY");
 }
 
 fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<ReadbackBuffer>>) {
