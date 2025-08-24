@@ -15,7 +15,7 @@ use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams};
 use crate::gpu::pipeline::{
     add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
-    prepare_pressure_pipeline,
+    prepare_integrate_pipeline, prepare_pressure_pipeline,
 };
 use glam::{IVec2, Vec2};
 
@@ -87,6 +87,8 @@ pub struct IntegrateParamsBuffer {
 pub struct ExtractedIntegrateParamsBuffer {
     pub buffer: Buffer,
 }
+#[derive(Resource, Default, Clone, Copy)]
+pub struct UseGpuIntegration(pub bool);
 
 // =====================================================================
 
@@ -169,10 +171,14 @@ fn queue_particle_buffer(
     sph: Res<SPHState>,
     particle_buffers: Option<Res<ParticleBuffers>>, // so that cpu example still works
     render_queue: Res<RenderQueue>,
+    use_gpu_integration: Res<UseGpuIntegration>,
 ) {
     let Some(particle_buffers) = particle_buffers else {
         return;
     };
+    if use_gpu_integration.0 {
+        return;
+    }
     let mut gpu_particles = Vec::with_capacity(sph.particles.len());
     for particle in &sph.particles {
         gpu_particles.push(GPUParticle {
@@ -455,10 +461,10 @@ pub fn update_grid_buffers(
 
 fn init_integrate_params_buffer(mut commands: Commands, render_device: Res<RenderDevice>) {
     let params = crate::gpu::ffi::IntegrateParams {
-        dt: 0.0,
-        x_min: 0.0,
-        x_max: 0.0,
-        bounce: -0.5,
+        dt: 0.0005,
+        x_min: -5.0,
+        x_max: 3.0,
+        bounce: -3.0,
     };
     let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("integrate_params_uniform"),
@@ -466,6 +472,16 @@ fn init_integrate_params_buffer(mut commands: Commands, render_device: Res<Rende
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
     });
     commands.insert_resource(IntegrateParamsBuffer { buffer });
+}
+fn update_integrate_params_buffer(render_queue: Res<RenderQueue>, ub: Res<IntegrateParamsBuffer>) {
+    // Keep these equal to your CPU step values for now.
+    let params = crate::gpu::ffi::IntegrateParams {
+        dt: 0.0005,
+        x_min: -5.0,
+        x_max: 3.0,
+        bounce: -3.0,
+    };
+    render_queue.write_buffer(&ub.buffer, 0, bytemuck::bytes_of(&params));
 }
 
 // extract to render-world
@@ -476,6 +492,10 @@ fn extract_integrate_params_buffer(
     commands.insert_resource(ExtractedIntegrateParamsBuffer {
         buffer: ub.buffer.clone(),
     });
+}
+
+fn init_use_gpu_integration(mut commands: Commands) {
+    commands.insert_resource(UseGpuIntegration(false)); // keep false for now
 }
 
 // comparison between GPU results and CPU
@@ -683,12 +703,20 @@ impl Plugin for GPUSPHPlugin {
                 init_allow_copy,
                 init_grid_buffers,
                 init_integrate_params_buffer,
+                init_use_gpu_integration,
             )
                 .chain(),
         )
         //.add_systems(Startup, init_particle_bind_group_layout)
         //.add_systems(Startup, init_allow_copy)
-        .add_systems(Update, (queue_particle_buffer, update_grid_buffers));
+        .add_systems(
+            Update,
+            (
+                queue_particle_buffer,
+                update_grid_buffers,
+                update_integrate_params_buffer,
+            ),
+        );
 
         // Render
         let render_app = app.sub_app_mut(RenderApp);
@@ -711,6 +739,7 @@ impl Plugin for GPUSPHPlugin {
                     prepare_density_pipeline.in_set(RenderSet::Prepare),
                     prepare_pressure_pipeline.in_set(RenderSet::Prepare),
                     prepare_forces_pipeline.in_set(RenderSet::Prepare),
+                    prepare_integrate_pipeline.in_set(RenderSet::Prepare),
                 ),
             );
 
