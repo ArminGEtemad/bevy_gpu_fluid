@@ -5,7 +5,7 @@ use bevy::window::PrimaryWindow;
 use glam::Vec2 as GVec2;
 
 use bevy_gpu_fluid::cpu::sph2d::SPHState;
-use bevy_gpu_fluid::gpu::buffers::readback_and_compare;
+use bevy_gpu_fluid::gpu::buffers::{SimStep, readback_and_compare};
 
 const RENDER_SCALE: f32 = 100.0;
 const PARTICLE_SIZE: f32 = 15.0;
@@ -40,6 +40,7 @@ fn main() {
         .insert_resource(SPHState::demo_block_5k())
         .insert_resource(DragInput::default())
         .insert_resource(ViewMode::DensityColor)
+        .insert_resource(SimStep::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -140,9 +141,10 @@ fn apply_drag(
 }
 
 // all the mathematic happens here!
-fn sph_step(mut sph: ResMut<SPHState>, time: Res<Time>) {
+fn sph_step(mut sph: ResMut<SPHState>, time: Res<Time>, mut step: ResMut<SimStep>) {
     let dt = time.delta_secs().min(DT);
     sph.step(dt, X_MAX, X_MIN, BOUNCINESS); // integral
+    step.0 += 1;
 }
 
 fn sync_particles(

@@ -90,6 +90,9 @@ pub struct ExtractedIntegrateParamsBuffer {
 #[derive(Resource, Default, Clone, Copy)]
 pub struct UseGpuIntegration(pub bool);
 
+#[derive(Resource, Default)]
+pub struct SimStep(pub u64);
+
 // =====================================================================
 
 // ========================== systems ==================================
@@ -508,7 +511,12 @@ pub fn readback_and_compare(
     mut frames_seen: Local<u32>,
     // simple local state: 0 = before arm, 1 = armed (map next frame), 2 = done
     mut state: Local<u8>,
+    step: Res<SimStep>,
 ) {
+    const MAX_REL_RHO_ERR: f32 = 0.01; // 1% threshold for CPU
+    const MAX_REL_P_ERR: f32 = 0.01; // 1%
+    const MAX_REL_ACC_ERR: f32 = 0.01; // 1%
+    const MAX_ABS_ACC_ERR: f32 = 0.50; // units of accel
     const FRAMES_BEFORE_READBACK: u32 = 60;
 
     if *done {
@@ -516,7 +524,10 @@ pub fn readback_and_compare(
     }
 
     *frames_seen += 1;
-    info!("from readback: frames_seen= {}", *frames_seen);
+    info!(
+        "from readback: frames_seen={} cpu_step={}", // making sure cpu and frame are the same
+        *frames_seen, step.0
+    );
     if *frames_seen < FRAMES_BEFORE_READBACK {
         return;
     }
@@ -576,10 +587,15 @@ pub fn readback_and_compare(
                     let rel = ((b - a) / a.abs().max(1e-6)).abs();
                     max_rel_rho = max_rel_rho.max(rel);
                 }
-                info!(
-                    "GPU density max relative error: {:.3}%",
-                    max_rel_rho * 100.0
-                );
+                if max_rel_rho > MAX_REL_RHO_ERR {
+                    error!("FAIL: density error {:.3}% > 1%", max_rel_rho * 100.0);
+                    readback.buffer.unmap();
+                    *done = true;
+                    *state = 2;
+                    return;
+                } else {
+                    info!("PASS: density within 1% (max {:.3}%).", max_rel_rho * 100.0);
+                }
 
                 // p
                 info!(
@@ -590,6 +606,14 @@ pub fn readback_and_compare(
                     gpu_particles[3].p,
                     gpu_particles[4].p,
                 );
+                info!(
+                    "CPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
+                    sph.particles[0].p,
+                    sph.particles[1].p,
+                    sph.particles[2].p,
+                    sph.particles[3].p,
+                    sph.particles[4].p,
+                );
                 let mut max_rel_p = 0.0f32;
                 for (i, cpu_p) in sph.particles.iter().enumerate() {
                     let a = cpu_p.p;
@@ -597,7 +621,15 @@ pub fn readback_and_compare(
                     let rel = ((b - a) / a.abs().max(1e-6)).abs();
                     max_rel_p = max_rel_p.max(rel);
                 }
-                info!("GPU pressure max relative error: {:.3}%", max_rel_p * 100.0);
+                if max_rel_p > MAX_REL_P_ERR {
+                    error!("FAIL: pressure error {:.3}% > 1%", max_rel_p * 100.0);
+                    readback.buffer.unmap();
+                    *done = true;
+                    *state = 2;
+                    return;
+                } else {
+                    info!("PASS: pressure within 1% (max {:.3}%).", max_rel_p * 100.0);
+                }
 
                 // acc (vector norm)
                 info!(
@@ -637,11 +669,26 @@ pub fn readback_and_compare(
                     max_rel_acc = max_rel_acc.max(diff / denom);
                     max_abs_acc = max_abs_acc.max(diff);
                 }
-                info!(
-                    "GPU acceleration max relative error: {:.3}%",
-                    max_rel_acc * 100.0
-                );
-                info!("GPU acceleration max absolute error: {:.3}", max_abs_acc);
+                let acc_fail_rel = max_rel_acc > MAX_REL_ACC_ERR;
+                let acc_fail_abs = max_abs_acc > MAX_ABS_ACC_ERR;
+                if acc_fail_rel || acc_fail_abs {
+                    error!(
+                        "FAIL: accel err rel={:.3}%, abs={:.3} (limits 1%, {:.2})",
+                        max_rel_acc * 100.0,
+                        max_abs_acc,
+                        MAX_ABS_ACC_ERR
+                    );
+                    readback.buffer.unmap();
+                    *done = true;
+                    *state = 2;
+                    return;
+                } else {
+                    info!(
+                        "PASS: accel within limits (rel {:.3}%, abs {:.3}).",
+                        max_rel_acc * 100.0,
+                        max_abs_acc
+                    );
+                }
 
                 drop(data);
             }

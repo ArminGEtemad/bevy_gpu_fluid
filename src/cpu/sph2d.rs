@@ -1,8 +1,11 @@
 // smoothed particle hydrodynamics in 2D (CPU prototype)
 use std::{collections::HashMap, f32::consts::PI};
 
-use glam::{Vec2, IVec2};
 use bevy::prelude::Resource;
+use glam::{IVec2, Vec2};
+
+#[derive(Resource, Default)] // to make sure GPU step and CPU step are the same
+pub struct SimStep(pub u64);
 
 type Cell = IVec2;
 
@@ -20,7 +23,9 @@ fn w_poly6(r2: f32, h: f32) -> f32 {
     let k: f32 = 4.0 / (PI * h.powi(8));
     if r2 >= 0.0 && r2 <= h * h {
         k * (h * h - r2).powi(3)
-    } else { 0.0 }
+    } else {
+        0.0
+    }
 }
 
 #[inline]
@@ -37,41 +42,50 @@ fn grad_spiky_kernel(r: Vec2, h: f32) -> Vec2 {
 #[inline]
 fn laplacian_visc(r: f32, h: f32) -> f32 {
     let k: f32 = 40.0 / (PI * h.powi(5));
-    if r == 0.0 || r >= h {
-        0.0
-    } else {
-        k * (h - r)
-    } 
+    if r == 0.0 || r >= h { 0.0 } else { k * (h - r) }
 }
 
 #[derive(Clone, Debug)]
 pub struct Particle {
-    pub pos: Vec2, // position 
+    pub pos: Vec2, // position
     pub vel: Vec2, // velocity
     pub acc: Vec2, // acceleration
-    pub rho: f32, // density
-    pub p: f32, // pressure
+    pub rho: f32,  // density
+    pub p: f32,    // pressure
 }
 
 impl Particle {
     pub fn new(pos: Vec2) -> Self {
-        Self { pos, vel: Vec2::ZERO, acc: Vec2::ZERO, rho: 0.0, p: 0.0 }
+        Self {
+            pos,
+            vel: Vec2::ZERO,
+            acc: Vec2::ZERO,
+            rho: 0.0,
+            p: 0.0,
+        }
     }
 }
 
 #[derive(Resource)]
 pub struct SPHState {
     pub h: f32, // smoothing length
-    pub rho_0: f32, 
-    pub k: f32, // stiffness
+    pub rho_0: f32,
+    pub k: f32,  // stiffness
     pub mu: f32, // viscosity
-    pub m: f32, // mass
+    pub m: f32,  // mass
     pub particles: Vec<Particle>,
 }
 
 impl SPHState {
     pub fn new(h: f32, rho_0: f32, k: f32, mu: f32, m: f32) -> Self {
-        Self { h, rho_0, k, mu, m, particles: Vec::new()}
+        Self {
+            h,
+            rho_0,
+            k,
+            mu,
+            m,
+            particles: Vec::new(),
+        }
     }
 
     // initializing particles
@@ -142,20 +156,24 @@ impl SPHState {
                 for oy in -1..=1 {
                     if let Some(list) = grid.get(&(cell_i + IVec2::new(ox, oy))) {
                         for &j in list {
-                            if i == j { continue; }
+                            if i == j {
+                                continue;
+                            }
                             let particle_j = &self.particles[j];
                             let r = pos_i - particle_j.pos;
                             let r2 = r.length_squared();
-                            
+
                             // acceleration due to pressure
                             let grad_spiky = grad_spiky_kernel(r, self.h);
                             // not text book but cheap to claculate for now
-                            let a_p = -self.m * (p_i + particle_j.p) / (2.0 * particle_j.rho) * grad_spiky; 
+                            let a_p = -self.m * (p_i + particle_j.p) / (2.0 * particle_j.rho)
+                                * grad_spiky;
 
                             // acceleration because of viscosity (fraction)
                             let r_mag = r2.sqrt(); // not len so not confused with len()
                             let laplacian = laplacian_visc(r_mag, self.h);
-                            let a_v = self.mu * self.m * (particle_j.vel - vel_i) / particle_j.rho * laplacian;
+                            let a_v = self.mu * self.m * (particle_j.vel - vel_i) / particle_j.rho
+                                * laplacian;
 
                             acc_vec[i] += a_p + a_v;
                         }
@@ -208,16 +226,9 @@ impl SPHState {
         self.apply_boundaries(x_max, x_min, bounce)
     }
 
-
     // demo function ----------------------------------------------
     pub fn demo_block_5k() -> Self {
-        let mut demo_sim_sph = Self::new(
-        0.045,
-        1000.0,
-        3.0,
-        0.2,
-        1.6,
-        );
+        let mut demo_sim_sph = Self::new(0.045, 1000.0, 3.0, 0.2, 1.6);
 
         demo_sim_sph.init_grid(71, 71, 0.04);
         demo_sim_sph
