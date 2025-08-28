@@ -498,7 +498,7 @@ fn extract_integrate_params_buffer(
 }
 
 fn init_use_gpu_integration(mut commands: Commands) {
-    commands.insert_resource(UseGpuIntegration(false)); // keep false for now
+    commands.insert_resource(UseGpuIntegration(true)); // had to become true for gpu demo to work
 }
 
 // comparison between GPU results and CPU
@@ -509,54 +509,55 @@ pub fn readback_and_compare(
     mut allow_copy: ResMut<AllowCopy>,
     mut done: Local<bool>,
     mut frames_seen: Local<u32>,
-    // simple local state: 0 = before arm, 1 = armed (map next frame), 2 = done
     mut state: Local<u8>,
     step: Res<SimStep>,
 ) {
-    const MAX_REL_RHO_ERR: f32 = 0.01; // 1% threshold for CPU
-    const MAX_REL_P_ERR: f32 = 0.01; // 1%
-    const MAX_REL_ACC_ERR: f32 = 0.01; // 1%
-    const MAX_ABS_ACC_ERR: f32 = 0.50; // units of accel
-    const FRAMES_BEFORE_READBACK: u32 = 60;
+    const EPS: f32 = 1e-6;
+    const MAX_REL: f32 = 0.01; // 1 % for rho, p, a
+    const MAX_ABS_ACC: f32 = 0.50;
+    const FRAMES_BEFORE_RD: u32 = 10; // give the sim time to warm up
+
+    #[inline(always)]
+    fn rel_err(a: f32, b: f32) -> f32 {
+        ((b - a) / a.abs().max(EPS)).abs()
+    }
 
     if *done {
         return;
     }
 
     *frames_seen += 1;
-    info!(
-        "from readback: frames_seen={} cpu_step={}", // making sure cpu and frame are the same
-        *frames_seen, step.0
-    );
-    if *frames_seen < FRAMES_BEFORE_READBACK {
+    info!("frame {}, sim step {}", *frames_seen, step.0);
+
+    if *frames_seen < FRAMES_BEFORE_RD {
         return;
     }
 
     match *state {
         0 => {
-            // Phase A: tell render to stop copying, then bail this frame.
-            allow_copy.0 = false;
+            allow_copy.0 = false; // skip copy next render frame
             *state = 1;
             return;
         }
+
         1 => {
-            // Phase B: safe to map now (render will skip copy this frame).
             let slice = readback.buffer.slice(..);
 
-            let status = Arc::new(AtomicU8::new(0)); // 0=pending, 1=ok, 2=err
-            let status_cb = Arc::clone(&status);
-            slice.map_async(MapMode::Read, move |res| {
-                status_cb.store(if res.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            // async map
+            let status = Arc::new(AtomicU8::new(0)); // 0=pending 1=ok 2=err
+            let cb = status.clone();
+            slice.map_async(MapMode::Read, move |r| {
+                cb.store(if r.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
             });
 
-            // Wait until the callback flips status from 0.
+            // spin-wait: RenderSchedule runs on the main thread anyway
             loop {
                 render_device.poll(Maintain::Poll);
                 match status.load(Ordering::SeqCst) {
                     0 => std::thread::yield_now(),
                     1 => break,
                     2 => {
-                        // mapping failed; make sure it's unmapped and stop trying
+                        error!("GPU buffer map failed");
                         readback.buffer.unmap();
                         *done = true;
                         *state = 2;
@@ -566,138 +567,80 @@ pub fn readback_and_compare(
                 }
             }
 
-            // Read, compare, log
-            {
-                let data = slice.get_mapped_range();
-                let gpu_particles: &[GPUParticle] = bytemuck::cast_slice(&data);
+            // comparison in one pass
+            let data = slice.get_mapped_range();
+            let gpu: &[GPUParticle] = bytemuck::cast_slice(&data);
 
-                // rho
-                info!(
-                    "GPU rho head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
-                    gpu_particles[0].rho,
-                    gpu_particles[1].rho,
-                    gpu_particles[2].rho,
-                    gpu_particles[3].rho,
-                    gpu_particles[4].rho,
-                );
-                let mut max_rel_rho = 0.0f32;
-                for (i, cpu_p) in sph.particles.iter().enumerate() {
-                    let a = cpu_p.rho;
-                    let b = gpu_particles[i].rho;
-                    let rel = ((b - a) / a.abs().max(1e-6)).abs();
-                    max_rel_rho = max_rel_rho.max(rel);
-                }
-                if max_rel_rho > MAX_REL_RHO_ERR {
-                    error!("FAIL: density error {:.3}% > 1%", max_rel_rho * 100.0);
-                    readback.buffer.unmap();
-                    *done = true;
-                    *state = 2;
-                    return;
-                } else {
-                    info!("PASS: density within 1% (max {:.3}%).", max_rel_rho * 100.0);
-                }
+            let mut max_rel_rho: f32 = 0.0;
+            let mut max_rel_p: f32 = 0.0;
+            let mut max_rel_a: f32 = 0.0;
+            let mut max_abs_a: f32 = 0.0;
 
-                // p
-                info!(
-                    "GPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
-                    gpu_particles[0].p,
-                    gpu_particles[1].p,
-                    gpu_particles[2].p,
-                    gpu_particles[3].p,
-                    gpu_particles[4].p,
-                );
-                info!(
-                    "CPU p head: [{:.0}, {:.0}, {:.0}, {:.0}, {:.0}]",
-                    sph.particles[0].p,
-                    sph.particles[1].p,
-                    sph.particles[2].p,
-                    sph.particles[3].p,
-                    sph.particles[4].p,
-                );
-                let mut max_rel_p = 0.0f32;
-                for (i, cpu_p) in sph.particles.iter().enumerate() {
-                    let a = cpu_p.p;
-                    let b = gpu_particles[i].p;
-                    let rel = ((b - a) / a.abs().max(1e-6)).abs();
-                    max_rel_p = max_rel_p.max(rel);
-                }
-                if max_rel_p > MAX_REL_P_ERR {
-                    error!("FAIL: pressure error {:.3}% > 1%", max_rel_p * 100.0);
-                    readback.buffer.unmap();
-                    *done = true;
-                    *state = 2;
-                    return;
-                } else {
-                    info!("PASS: pressure within 1% (max {:.3}%).", max_rel_p * 100.0);
-                }
+            for (cpu, g) in sph.particles.iter().zip(gpu) {
+                max_rel_rho = max_rel_rho.max(rel_err(cpu.rho, g.rho));
+                max_rel_p = max_rel_p.max(rel_err(cpu.p, g.p));
 
-                // acc (vector norm)
-                info!(
-                    "CPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
-                    sph.particles[0].acc.x,
-                    sph.particles[0].acc.y,
-                    sph.particles[1].acc.x,
-                    sph.particles[1].acc.y,
-                    sph.particles[2].acc.x,
-                    sph.particles[2].acc.y,
-                    sph.particles[3].acc.x,
-                    sph.particles[3].acc.y,
-                    sph.particles[4].acc.x,
-                    sph.particles[4].acc.y,
-                );
-                info!(
-                    "GPU acc head: [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}] [{:.3}, {:.3}]",
-                    gpu_particles[0].acc[0],
-                    gpu_particles[0].acc[1],
-                    gpu_particles[1].acc[0],
-                    gpu_particles[1].acc[1],
-                    gpu_particles[2].acc[0],
-                    gpu_particles[2].acc[1],
-                    gpu_particles[3].acc[0],
-                    gpu_particles[3].acc[1],
-                    gpu_particles[4].acc[0],
-                    gpu_particles[4].acc[1],
-                );
-
-                let mut max_rel_acc = 0.0f32;
-                let mut max_abs_acc = 0.0f32;
-                for (i, cpu_p) in sph.particles.iter().enumerate() {
-                    let cpu = glam::Vec2::new(cpu_p.acc.x, cpu_p.acc.y);
-                    let gpu = glam::Vec2::new(gpu_particles[i].acc[0], gpu_particles[i].acc[1]);
-                    let diff = (gpu - cpu).length();
-                    let denom = cpu.length().max(1e-3);
-                    max_rel_acc = max_rel_acc.max(diff / denom);
-                    max_abs_acc = max_abs_acc.max(diff);
-                }
-                let acc_fail_rel = max_rel_acc > MAX_REL_ACC_ERR;
-                let acc_fail_abs = max_abs_acc > MAX_ABS_ACC_ERR;
-                if acc_fail_rel || acc_fail_abs {
-                    error!(
-                        "FAIL: accel err rel={:.3}%, abs={:.3} (limits 1%, {:.2})",
-                        max_rel_acc * 100.0,
-                        max_abs_acc,
-                        MAX_ABS_ACC_ERR
-                    );
-                    readback.buffer.unmap();
-                    *done = true;
-                    *state = 2;
-                    return;
-                } else {
-                    info!(
-                        "PASS: accel within limits (rel {:.3}%, abs {:.3}).",
-                        max_rel_acc * 100.0,
-                        max_abs_acc
-                    );
-                }
-
-                drop(data);
+                let cpu_a = glam::Vec2::new(cpu.acc.x, cpu.acc.y);
+                let gpu_a = glam::Vec2::new(g.acc[0], g.acc[1]);
+                let diff = (gpu_a - cpu_a).length();
+                max_abs_a = max_abs_a.max(diff);
+                max_rel_a = max_rel_a.max(diff / cpu_a.length().max(EPS));
             }
 
-            // Always unmap before returning
+            // helper macro so we don’t repeat boilerplate
+            macro_rules! check {
+                ($label:literal, $err:expr, $lim:expr) => {
+                    if $err > $lim {
+                        error!(
+                            "FAIL: {} error {:.3} % > {:.1} %",
+                            $label,
+                            $err * 100.0,
+                            $lim * 100.0
+                        );
+                        return Err(());
+                    } else {
+                        info!(
+                            "PASS: {} within {:.1} % (max {:.3} %)",
+                            $label,
+                            $lim * 100.0,
+                            $err * 100.0
+                        );
+                    }
+                };
+            }
+
+            let res: Result<(), ()> = (|| {
+                check!("density", max_rel_rho, MAX_REL);
+                check!("pressure", max_rel_p, MAX_REL);
+                if max_rel_a > MAX_REL || max_abs_a > MAX_ABS_ACC {
+                    error!(
+                        "FAIL: accel rel {:.3} %, abs {:.3} (limits {:.1} %, {:.2})",
+                        max_rel_a * 100.0,
+                        max_abs_a,
+                        MAX_REL * 100.0,
+                        MAX_ABS_ACC
+                    );
+                    return Err(());
+                } else {
+                    info!(
+                        "PASS: accel within limits (rel {:.3} %, abs {:.3})",
+                        max_rel_a * 100.0,
+                        max_abs_a
+                    );
+                }
+                Ok(())
+            })();
+
+            drop(data);
             readback.buffer.unmap();
             *done = true;
             *state = 2;
+
+            if res.is_err() {
+                panic!("GPU <-> CPU validation failed; see log above");
+            }
         }
+
         _ => {}
     }
 }
