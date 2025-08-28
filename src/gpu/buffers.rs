@@ -515,7 +515,7 @@ pub fn readback_and_compare(
     const EPS: f32 = 1e-6;
     const MAX_REL: f32 = 0.01; // 1 % for rho, p, a
     const MAX_ABS_ACC: f32 = 0.50;
-    const FRAMES_BEFORE_RD: u32 = 10; // give the sim time to warm up
+    const FRAMES_BEFORE_RD: u32 = 60; // give the sim time to warm up
 
     #[inline(always)]
     fn rel_err(a: f32, b: f32) -> f32 {

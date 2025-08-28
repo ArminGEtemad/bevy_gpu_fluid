@@ -1,3 +1,4 @@
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Maintain, MapMode};
 use bevy_gpu_fluid::cpu::sph2d::SPHState;
@@ -14,7 +15,7 @@ struct ParticleVisual(usize);
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(ClearColor(Color::Srgba(
             bevy::color::palettes::css::DARK_SLATE_GRAY,
         )))
@@ -25,6 +26,7 @@ fn main() {
         .add_plugins(GPUSPHPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, sync_sprites_from_gpu.before(update_grid_buffers))
+        .add_systems(Update, log_fps)
         .run();
 }
 
@@ -143,5 +145,18 @@ fn sync_sprites_from_gpu(
             return;
         }
         _ => *fsm = 0,
+    }
+}
+
+fn log_fps(diagnostics: Res<DiagnosticsStore>, mut counter: Local<u32>) {
+    *counter += 1;
+    if *counter >= 120 {
+        *counter = 0;
+
+        if let Some(fps_diag) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
+            if let Some(avg) = fps_diag.average() {
+                info!("==== Average FPS over last ~2 s: {:.1} ====", avg); // grabbing the FPS 
+            }
+        }
     }
 }
