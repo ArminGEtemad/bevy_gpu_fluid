@@ -50,7 +50,7 @@ fn main() {
                 apply_drag,
                 toggle_view,
                 sync_particles,
-                readback_and_compare,
+                // readback_and_compare,
             ),
         )
         .run();
