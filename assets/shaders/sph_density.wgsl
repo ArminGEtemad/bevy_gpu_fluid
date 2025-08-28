@@ -1,3 +1,4 @@
+const EPS : f32 = 1e-6;
 struct Particle {
     pos: vec2<f32>,
     vel: vec2<f32>,
@@ -66,7 +67,7 @@ fn w_poly6(r2: f32) -> f32 {
 fn grad_spiky_kernel(r: vec2<f32>) -> vec2<f32> {
     let h = grid.cell_size;
     let r_len = length(r);
-    if r_len == 0.0 || r_len >= h {
+    if r_len < EPS || r_len >= h {
         return vec2<f32>(0.0, 0.0);
     }
 
