@@ -12,7 +12,7 @@ use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
-use crate::gpu::ffi::{GPUParticle, GridParams};
+use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::pipeline::{
     add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
     prepare_integrate_pipeline, prepare_pressure_pipeline,
@@ -92,6 +92,25 @@ pub struct UseGpuIntegration(pub bool);
 
 #[derive(Resource, Default)]
 pub struct SimStep(pub u64);
+
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct IntegrateConfig {
+    pub dt: f32,
+    pub x_min: f32,
+    pub x_max: f32,
+    pub bounce: f32,
+}
+
+impl Default for IntegrateConfig {
+    fn default() -> Self {
+        Self {
+            dt: 0.0005,
+            x_min: -5.0,
+            x_max: 3.0,
+            bounce: -3.0,
+        }
+    }
+}
 
 // =====================================================================
 
@@ -462,12 +481,16 @@ pub fn update_grid_buffers(
     grid.update(&render_device, &render_queue, &sph);
 }
 
-fn init_integrate_params_buffer(mut commands: Commands, render_device: Res<RenderDevice>) {
-    let params = crate::gpu::ffi::IntegrateParams {
-        dt: 0.0005,
-        x_min: -5.0,
-        x_max: 3.0,
-        bounce: -3.0,
+fn init_integrate_params_buffer(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
     };
     let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("integrate_params_uniform"),
@@ -476,13 +499,16 @@ fn init_integrate_params_buffer(mut commands: Commands, render_device: Res<Rende
     });
     commands.insert_resource(IntegrateParamsBuffer { buffer });
 }
-fn update_integrate_params_buffer(render_queue: Res<RenderQueue>, ub: Res<IntegrateParamsBuffer>) {
-    // Keep these equal to your CPU step values for now.
-    let params = crate::gpu::ffi::IntegrateParams {
-        dt: 0.0005,
-        x_min: -5.0,
-        x_max: 3.0,
-        bounce: -3.0,
+fn update_integrate_params_buffer(
+    render_queue: Res<RenderQueue>,
+    ub: Res<IntegrateParamsBuffer>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
     };
     render_queue.write_buffer(&ub.buffer, 0, bytemuck::bytes_of(&params));
 }
@@ -684,6 +710,7 @@ pub struct GPUSPHPlugin;
 impl Plugin for GPUSPHPlugin {
     fn build(&self, app: &mut App) {
         // App
+        app.init_resource::<IntegrateConfig>();
         app.add_systems(
             Startup,
             (
