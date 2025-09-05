@@ -274,6 +274,29 @@ fn queue_particle_buffer(
     );
 }
 
+pub fn update_grid_buffers(
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    sph: Res<SPHState>,
+    mut grid: ResMut<GridBuffers>,
+) {
+    grid.update(&render_device, &render_queue, &sph);
+}
+
+fn update_integrate_params_buffer(
+    render_queue: Res<RenderQueue>,
+    ub: Res<IntegrateParamsBuffer>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
+    };
+    render_queue.write_buffer(&ub.buffer, 0, bytemuck::bytes_of(&params));
+}
+
 // Extract systems that send from App to Render
 
 fn extract_particle_buffer(
@@ -495,29 +518,6 @@ pub fn extract_grid_buffers(mut commands: Commands, grid: Extract<Res<GridBuffer
     });
 }
 
-pub fn update_grid_buffers(
-    render_device: Res<RenderDevice>,
-    render_queue: Res<RenderQueue>,
-    sph: Res<SPHState>,
-    mut grid: ResMut<GridBuffers>,
-) {
-    grid.update(&render_device, &render_queue, &sph);
-}
-
-fn update_integrate_params_buffer(
-    render_queue: Res<RenderQueue>,
-    ub: Res<IntegrateParamsBuffer>,
-    config: Res<IntegrateConfig>,
-) {
-    let params = IntegrateParams {
-        dt: config.dt,
-        x_min: config.x_min,
-        x_max: config.x_max,
-        bounce: config.bounce,
-    };
-    render_queue.write_buffer(&ub.buffer, 0, bytemuck::bytes_of(&params));
-}
-
 // extract to render-world
 fn extract_integrate_params_buffer(
     mut commands: Commands,
@@ -725,8 +725,6 @@ impl Plugin for GPUSPHPlugin {
             )
                 .chain(),
         )
-        //.add_systems(Startup, init_particle_bind_group_layout)
-        //.add_systems(Startup, init_allow_copy)
         .add_systems(
             Update,
             (
@@ -764,6 +762,3 @@ impl Plugin for GPUSPHPlugin {
         add_density_node_to_graph(render_app);
     }
 }
-
-/* used https://cocalc.com/github/bevyengine/bevy/blob/main/examples/shader/compute_shader_game_of_life.rs
-as my example here */
