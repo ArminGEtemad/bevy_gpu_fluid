@@ -187,6 +187,60 @@ fn init_particle_bind_group_layout(mut commands: Commands, render_device: Res<Re
     commands.insert_resource(ParticleBindGroupLayout(layout));
 }
 
+fn init_readback_buffer(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    particle_buffers: Option<Res<ParticleBuffers>>, // solving the panic problem
+) {
+    let Some(particle_buffers) = particle_buffers else {
+        return;
+    };
+    let size_bytes =
+        (particle_buffers.num_particles as u64) * (std::mem::size_of::<GPUParticle>() as u64);
+    let buffer = render_device.create_buffer(&BufferDescriptor {
+        label: Some("readback_buffer"),
+        size: size_bytes,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    commands.insert_resource(ReadbackBuffer { buffer, size_bytes });
+}
+
+fn init_allow_copy(mut commands: Commands) {
+    commands.insert_resource(AllowCopy(true));
+}
+
+pub fn init_grid_buffers(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    sph: Res<SPHState>,
+) {
+    commands.insert_resource(GridBuffers::new(&render_device, &sph));
+}
+
+fn init_integrate_params_buffer(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
+    };
+    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("integrate_params_uniform"),
+        contents: bytemuck::bytes_of(&params),
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    });
+    commands.insert_resource(IntegrateParamsBuffer { buffer });
+}
+
+fn init_use_gpu_integration(mut commands: Commands) {
+    commands.insert_resource(UseGpuIntegration(true)); // had to become true for gpu demo to work
+}
+
 // Update systems that have to run per frame
 
 fn queue_particle_buffer(
@@ -218,25 +272,6 @@ fn queue_particle_buffer(
         0,
         bytemuck::cast_slice(&gpu_particles),
     );
-}
-
-fn init_readback_buffer(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    particle_buffers: Option<Res<ParticleBuffers>>, // solving the panic problem
-) {
-    let Some(particle_buffers) = particle_buffers else {
-        return;
-    };
-    let size_bytes =
-        (particle_buffers.num_particles as u64) * (std::mem::size_of::<GPUParticle>() as u64);
-    let buffer = render_device.create_buffer(&BufferDescriptor {
-        label: Some("readback_buffer"),
-        size: size_bytes,
-        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    commands.insert_resource(ReadbackBuffer { buffer, size_bytes });
 }
 
 // Extract systems that send from App to Render
@@ -303,10 +338,6 @@ fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<Readbac
         buffer: readback.buffer.clone(),
         size_bytes: readback.size_bytes,
     });
-}
-
-fn init_allow_copy(mut commands: Commands) {
-    commands.insert_resource(AllowCopy(true));
 }
 
 fn extract_allow_copy(mut commands: Commands, allow: Extract<Res<AllowCopy>>) {
@@ -464,14 +495,6 @@ pub fn extract_grid_buffers(mut commands: Commands, grid: Extract<Res<GridBuffer
     });
 }
 
-pub fn init_grid_buffers(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    sph: Res<SPHState>,
-) {
-    commands.insert_resource(GridBuffers::new(&render_device, &sph));
-}
-
 pub fn update_grid_buffers(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
@@ -481,24 +504,6 @@ pub fn update_grid_buffers(
     grid.update(&render_device, &render_queue, &sph);
 }
 
-fn init_integrate_params_buffer(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    config: Res<IntegrateConfig>,
-) {
-    let params = IntegrateParams {
-        dt: config.dt,
-        x_min: config.x_min,
-        x_max: config.x_max,
-        bounce: config.bounce,
-    };
-    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("integrate_params_uniform"),
-        contents: bytemuck::bytes_of(&params),
-        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-    });
-    commands.insert_resource(IntegrateParamsBuffer { buffer });
-}
 fn update_integrate_params_buffer(
     render_queue: Res<RenderQueue>,
     ub: Res<IntegrateParamsBuffer>,
@@ -521,10 +526,6 @@ fn extract_integrate_params_buffer(
     commands.insert_resource(ExtractedIntegrateParamsBuffer {
         buffer: ub.buffer.clone(),
     });
-}
-
-fn init_use_gpu_integration(mut commands: Commands) {
-    commands.insert_resource(UseGpuIntegration(true)); // had to become true for gpu demo to work
 }
 
 // comparison between GPU results and CPU
