@@ -215,7 +215,25 @@ How exactly does this system work?
 
 The `mapped_at_creation: false,` flag means that we don't map it yet. we wait until we are ready!
 
-In the next step, we make the buffer for the spatial structure
+In the next step, we make the buffer for the spatial structure but just quickly 
+
+---
+### II Foreign Function Interface
+Just like the other ffi part of the code we need alignment with WGSL. 
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GridParams {
+    pub min_world: [f32; 2],
+    pub _pad0: f32,
+    pub dims: [u32; 2],
+    pub _pad1: [u32; 2], 
+}
+```
+---
+
+back to buffers
+
 ```rust
 #[derive(Resource)]
 pub struct GridBuffers {
@@ -376,7 +394,6 @@ impl GridBuffers {
         );
     }
 }
-
 ```
 In itself, it has three buffers. The function reads the CPU side and allocates and sets up the memory of correct size. Before going to the implementation we need two helper funcitons `cell_ix` and `build_compressed_grid`. `cell_ix` takes the position and the smoothing length and returns a 2D interger ID of the grid cell that the particle belongs to. So if a particle is at position $(2.2, 3.8)$ and $h=1.0$ then this particle must live in the cell $(2, 3)$.
 
@@ -384,5 +401,73 @@ Then `build_compressed_grid` function converts a list of particles into `GridPar
 
 Then we compute the grid dimensions and total number of cells. We want to have a grid of cells that starts at `min_c` (top-left-most cell with any particle) and ends with `max_c` (bottom-right-most cell with any particle in it) meaning if $c_{min}=(3, 7)$ and $c_{max}=(6, 9)$ then the needed $x$ axis is $3, 4, 5, 6$ and $y$ axis will be $7, 8, 9$ meaning 4 cells in x direction and 3 cells in y direction $6 - 3 + 1$ and $9 - 7 + 1$. It is then trivial that the number of cells are given by multiplying the number of cells in x direction to y direction.
 
+Now, it is time for some memory work. First of all, we have to count how many particles are in each grid cell. We assign each particle to a grid cell indexed by an integer. Meaning 2D cell coordinates $(ix, iy)$ are converted to a 1D array $id$. At the end we see how many particles are in the same cell. We get somethin like `counts = [3, 1, 2, 3, 5, ...]` meaning that there are 3 particles in cell with index 0 and so on. 
 
+The start array runs like
+`starts[0] = 0`
+`starts[1] = starts[0] + counts[0] = 0 + 3 = 3` (I use the already mentioned example for `counts`)
+`starts[2] = starts[1] + counts[1] = 3 + 1 = 4`
+`starts[3] = starts[2] + counts[2] = 4 + 2 = 6`
+We need this array because in the next step we want to put all particles into one big flat array called `entries`.
 
+| Cell | `starts[i]` | `starts[i+1]` | Entries range                 |
+| ---- | ----------- | ------------- | ----------------------------- |
+| 0    | 0           | 3             | `entries[0..3]` → 3 particles |
+| 1    | 3           | 4             | `entries[3..4]` → 1 particle  |
+| 2    | 4           | 6             | `entries[4..6]` → 2 particle  |
+
+At the end the parameters of `GridParams` are found.
+Now we can look at `impl GridBuffers`
+First we define the three buffers and we log it for debugging. Its update function is called every frame. to refresh the buffer with the latest data. 
+1. it rebuilds the grid from CPU
+2. checks for size changes
+3. updates all the buffers
+
+It logs again.
+
+The last pieces of startups are incluing the ffi
+
+---
+### III Foreign Function Interface
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct IntegrateParams {
+    pub dt: f32,
+    pub x_min: f32,
+    pub x_max: f32,
+    pub bounce: f32, // mast be negative
+}
+```
+---
+
+```rust
+#[derive(Resource)]
+pub struct IntegrateParamsBuffer {
+    pub buffer: Buffer,
+}
+fn init_integrate_params_buffer(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
+    };
+    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("integrate_params_uniform"),
+        contents: bytemuck::bytes_of(&params),
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    });
+    commands.insert_resource(IntegrateParamsBuffer { buffer });
+}
+
+fn init_use_gpu_integration(mut commands: Commands) {
+    commands.insert_resource(UseGpuIntegration(true)); 
+}
+```
+
+this code initializes the buffer needed for intergration. builds the shaders interface (the contract between CPU and GPU!)
