@@ -471,3 +471,90 @@ fn init_use_gpu_integration(mut commands: Commands) {
 ```
 
 this code initializes the buffer needed for intergration. builds the shaders interface (the contract between CPU and GPU!)
+
+### Update
+Update systems run every frame starting with 
+
+```rust
+fn queue_particle_buffer(
+    sph: Res<SPHState>,
+    particle_buffers: Option<Res<ParticleBuffers>>,
+    render_queue: Res<RenderQueue>,
+    use_gpu_integration: Res<UseGpuIntegration>,
+) {
+    let Some(particle_buffers) = particle_buffers else {
+        return;
+    };
+    if use_gpu_integration.0 {
+        return;
+    }
+    let mut gpu_particles = Vec::with_capacity(sph.particles.len());
+    for particle in &sph.particles {
+        gpu_particles.push(GPUParticle {
+            pos: [particle.pos.x, particle.pos.y],
+            vel: [particle.vel.x, particle.vel.y],
+            acc: [particle.acc.x, particle.acc.y],
+            rho: particle.rho,
+            p: particle.p,
+        });
+    }
+
+    render_queue.write_buffer(
+        &particle_buffers.particle_buffer,
+        0,
+        bytemuck::cast_slice(&gpu_particles),
+    );
+}
+```
+I wrote this function back when I wanted to compare GPU and CPU using the readback. At the end of sprint 3, GPU itself evolves the particles and no CPU overwrite is needed. So this function is not used anymore. It converted `Vec<Particle>` to `Vec<GPUParticle>`. Then just send the particle data to the GPU. 
+
+Next is 
+```rust
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct IntegrateConfig {
+    pub dt: f32,
+    pub x_min: f32,
+    pub x_max: f32,
+    pub bounce: f32,
+}
+
+impl Default for IntegrateConfig {
+    fn default() -> Self {
+        Self {
+            dt: 0.0005,
+            x_min: -5.0,
+            x_max: 3.0,
+            bounce: -3.0,
+        }
+    }
+}
+fn update_integrate_params_buffer(
+    render_queue: Res<RenderQueue>,
+    ub: Res<IntegrateParamsBuffer>,
+    config: Res<IntegrateConfig>,
+) {
+    let params = IntegrateParams {
+        dt: config.dt,
+        x_min: config.x_min,
+        x_max: config.x_max,
+        bounce: config.bounce,
+    };
+    render_queue.write_buffer(&ub.buffer, 0, bytemuck::bytes_of(&params));
+}
+```
+with which we upload the updated integration parameters for the GPU every frame. I did it every frame because I wasn't sure if I want to stay with a static simulation or if I want to make the wall oscillate in the future. So I thought it just makes it more flexible for the future. Also it was a fast way of getting rid of hardcoded values in the earlier version of the code. 
+
+the last system in Update is 
+```rust
+pub fn update_grid_buffers(
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    sph: Res<SPHState>,
+    mut grid: ResMut<GridBuffers>,
+) {
+    grid.update(&render_device, &render_queue, &sph);
+}
+```
+which calls the method we already discussed `GridBuffer::update()`. In every frame, we are giving GPU the latest particle map and needed information for further calculations. 
+
+
