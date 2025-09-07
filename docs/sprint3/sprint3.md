@@ -557,4 +557,268 @@ pub fn update_grid_buffers(
 ```
 which calls the method we already discussed `GridBuffer::update()`. In every frame, we are giving GPU the latest particle map and needed information for further calculations. 
 
+## Extractions
+Main world and render world do not live together. Render world does not have access to the main world resources directly. 
+> `ExtracSchedule` extracts data from the main world and inserts it into the render world.
+> This step should be kept as short as possible to increase the “pipelining potential” for running the next frame while rendering the current frame.
+
+I have this information from [here](https://docs.rs/bevy/latest/bevy/render/struct.ExtractSchedule.html)
+
+First extraction is 
+```rust
+// Rendering world Copy
+#[derive(Resource, Clone, ExtractResource)]
+pub struct ExtractedParticleBuffer {
+    pub buffer: Buffer,
+    pub num_particles: u32,
+}
+
+fn extract_particle_buffer(
+    mut commands: Commands,
+    particle_buffers: Extract<Res<ParticleBuffers>>,
+) {
+    commands.insert_resource(ExtractedParticleBuffer {
+        buffer: particle_buffers.particle_buffer.clone(),
+        num_particles: particle_buffers.num_particles,
+    });
+}
+```
+Main job of this function is to bring over the `ParticleBUffers` from the main app into the render app (like one way road being `Extract<Res<ParticleBuffers>>`). 
+
+Then 
+```rust
+#[derive(Resource, Clone)]
+pub struct ParticleBindGroupLayout(pub BindGroupLayout);
+
+fn extract_bind_group_layout(
+    mut commands: Commands,
+    layout: Extract<Res<ParticleBindGroupLayout>>,
+) {
+    commands.insert_resource(ParticleBindGroupLayout(layout.0.clone()));
+}
+```
+Remember that we made a bung group layout. However, the main world only knew about the contract and GPU wasn't aware. Now, with this function we exract it to the render world. 
+
+The next extraction is that of readback. GPU cannot just write to CPU memory. So we make:
+```rust
+#[derive(Resource, Clone, ExtractResource)]
+pub struct ExtractedReadbackBuffer {
+    pub buffer: Buffer,
+    pub size_bytes: u64,
+}
+fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<ReadbackBuffer>>) {
+    commands.insert_resource(ExtractedReadbackBuffer {
+        buffer: readback.buffer.clone(),
+        size_bytes: readback.size_bytes,
+    });
+}
+```
+I am not sure explaining all of the extraction functions is necessary since they have all only one job and that is to copy recources from the main world into the render world without changing them.
+
+## Prepare Systems: Render
+Starting with 
+```rust
+fn prepare_particle_bind_group(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    layout: Res<ParticleBindGroupLayout>,
+    extracted: Res<ExtractedParticleBuffer>,
+    grid: Res<ExtractedGrid>,
+    integ: Res<ExtractedIntegrateParamsBuffer>,
+) {
+    let bind_group = render_device.create_bind_group(
+        Some("particle_bind_group"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: extracted.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: grid.starts_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: grid.entries_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: grid.params_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: integ.buffer.as_entire_binding(),
+            },
+        ],
+    );
+    commands.insert_resource(ParticleBindGroup(bind_group));
+    info!("particle_bind_group is READY");
+}
+
+```
+All the inputs are GPU-side resources, already extracted from the main world. Here, we pass the GPU buffers into a compute shader in the exact layout it expects. Remember `BindGroupEntry`. For anything that follows we need to look at the pipelines first!
+
+### Pipelines
+
+Density Pipeline: 
+```rust
+pub fn prepare_density_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Res<ParticleBindGroupLayout>,
+    mut pipeline_id: Local<Option<CachedComputePipelineId>>,
+    assets: Res<AssetServer>,
+) {
+    if pipeline_id.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/sph_density.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("sph_density_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            push_constant_ranges: Vec::<PushConstantRange>::new(),
+            shader,
+            shader_defs: Vec::<ShaderDefVal>::new(),
+            entry_point: Cow::Borrowed("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
+        return;
+    }
+
+    if let Some(id) = *pipeline_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            info!("density_pipe_line is READY");
+
+            commands.insert_resource(DensityPipeline(pipeline.clone()));
+        }
+    }
+}
+```
+The cache is the central store for all WGPU pipeline comilation results. The Compilation starts from the `assets` folder.  We queue the pipeline build and save the ID for later. 
+Once the pipeline is compiled, we insert it. This is the same with every pipeline.
+
+### Node
+I named it `DensityNode` but the reality is that it is the node for everything. I have to change it in the future. 
+```rust
+impl Node for DensityNode {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        // return because the calculations doesn't exist yet
+        let Some(pipeline) = world.get_resource::<DensityPipeline>() else {
+            return Ok(());
+        };
+        let Some(bind_group) = world.get_resource::<ParticleBindGroup>() else {
+            return Ok(());
+        };
+        let Some(extracted) = world.get_resource::<ExtractedParticleBuffer>() else {
+            return Ok(());
+        };
+
+        // ==== debugging info ====
+        if world.get_resource::<DensityPipeline>().is_none() {
+            info!("Info Node: no pipeline");
+            return Ok(());
+        }
+        if world.get_resource::<ParticleBindGroup>().is_none() {
+            info!("Info Node: no particle bind group");
+            return Ok(());
+        }
+        if world.get_resource::<ExtractedParticleBuffer>().is_none() {
+            info!("Info Node: no particle buffer");
+            return Ok(());
+        }
+
+        let n = extracted.num_particles.max(1);
+        let workgroups = (n + 255) / 256;
+        info!("Info Node: DISPATCH, N = {}, groups = {}", n, workgroups);
+
+        let mut pass = render_context
+            .command_encoder()
+            .begin_compute_pass(&ComputePassDescriptor::default());
+
+        pass.set_pipeline(&pipeline.0); 
+        pass.set_bind_group(0, &bind_group.0, &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+
+        if let Some(pressure) = world.get_resource::<PressurePipeline>() {
+            pass.set_pipeline(&pressure.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH pressure N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: pressure SKIPPED (pipeline not working/not ready)");
+        }
+
+        if let Some(forces) = world.get_resource::<ForcesPipeline>() {
+            pass.set_pipeline(&forces.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH forces N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: forces SKIPPED (pipeline not working/not ready)");
+        }
+
+        if let Some(integrate) = world.get_resource::<IntegratePipeline>() {
+            pass.set_pipeline(&integrate.0);
+            pass.set_bind_group(0, &bind_group.0, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            info!("Info Node: DISPATCH integrate N = {n}, groups = {workgroups}");
+        } else {
+            info!("Info Node: integrate SKIPPED (pipeline not ready)");
+        }
+
+        drop(pass);
+        let Some(readback) = world.get_resource::<ExtractedReadbackBuffer>() else {
+            return Ok(());
+        };
+
+        let allow_copy = world
+            .get_resource::<ExtractedAllowCopy>()
+            .map(|f| f.0)
+            .unwrap_or(true);
+
+        if allow_copy {
+            render_context.command_encoder().copy_buffer_to_buffer(
+                &extracted.buffer,
+                0,
+                &readback.buffer,
+                0,
+                readback.size_bytes,
+            );
+            info!(
+                "Info Node: COPY particles -> readback ({} bytes)",
+                readback.size_bytes
+            );
+        } else {
+            info!("Info Node: copy is SKIPPED");
+        }
+
+        Ok(())
+    }
+}
+```
+This is the actual GPU execution pipeline. 
+1. waits until all pipelines are compiled and bind groups are ready
+2. starts a compute pass and dispatches the SPH pipeline stages:
+   - Density
+   - Pressure
+   - Forces
+   - Integration
+3. if allowed copies the result buffer back into a CPU readable buffer `readback` for debugging.
+
+Here, I made `n` to be at least one even if there are no particles since dispatching 0 workgroups can crash the system.
+This whole phase works as following:
+
+| Phase       | System                         | Description |
+|-------------|--------------------------------|-------------|
+| Extract     | `extract_particle_buffer`      | Clones GPU buffer to Render World |
+| Prepare     | `prepare_density_pipeline`     | Queues WGSL compute shader        |
+| RenderGraph | `DensityNode::run`             | Sets pipeline, binds, dispatches  |
+| Dispatch    | `dispatch_workgroups`          | Launches compute threads          |
+
+
 
