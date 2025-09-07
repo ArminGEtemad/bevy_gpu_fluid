@@ -56,7 +56,7 @@ pub fn prepare_density_pipeline(
             push_constant_ranges: Vec::<PushConstantRange>::new(),
             shader,
             shader_defs: Vec::<ShaderDefVal>::new(),
-            entry_point: Cow::from("main"),
+            entry_point: Cow::Borrowed("main"),
             zero_initialize_workgroup_memory: false,
         };
         *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
@@ -88,7 +88,7 @@ pub fn prepare_pressure_pipeline(
             push_constant_ranges: Vec::<PushConstantRange>::new(),
             shader,
             shader_defs: Vec::<ShaderDefVal>::new(),
-            entry_point: Cow::from("pressure_main"),
+            entry_point: Cow::Borrowed("pressure_main"),
             zero_initialize_workgroup_memory: false,
         };
         *pipeline_id = Some(pipeline_cache.queue_compute_pipeline(desc));
