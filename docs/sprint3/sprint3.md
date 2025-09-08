@@ -820,5 +820,122 @@ This whole phase works as following:
 | RenderGraph | `DensityNode::run`             | Sets pipeline, binds, dispatches  |
 | Dispatch    | `dispatch_workgroups`          | Launches compute threads          |
 
+## Plugin
+The bevy plugin is where we put every system together. 
+| Phase                | Type   | Runs In      | What does it do?                               |
+| -------------------- | ------ | ------------ | ------------------------------------------ |
+| `Startup`            | System | Main World   | Allocate all GPU buffers + config          |
+| `Update`             | System | Main World   | Push any updated particle/grid data to GPU |
+| `ExtractSchedule`    | System | Render World | Clone resources into render world          |
+| `RenderSet::Prepare` | System | Render World | Prepare bind groups + pipelines            |
+| `Render Graph`       | Node   | Render World | Run compute shaders + copy data if needed  |
+
+# GPU Demo
+![GPU Demo](gpu_demo.gif)
+
+To run this, I needed a GPU-CPU cycle. And it was done as following:
+0. Allow GPU copy
+1. disable copy
+2. wait 1 frame
+3. map GPU buffer
+4. cool down and reset
+
+Of course, the end product won't work like this as this is only a prototype to make sure that the compute shader works. Also right now the visualization is still by bevy's sprites and not shaders. So lagging visuals are expected here.  
+
+```rust
+fn sync_sprites_from_gpu(
+    mut allow_copy: ResMut<AllowCopy>,
+    readback: Option<Res<ReadbackBuffer>>,
+    mut q: Query<(&ParticleVisual, &mut Transform)>,
+    render_device: Res<bevy::render::renderer::RenderDevice>,
+    mut sph: ResMut<SPHState>,
+    mut fsm: Local<u8>, // 0 copy, 1 disable, 2 wait, 3 map, 4 cool-down
+) {
+    let Some(readback) = readback else { return };
+
+    match *fsm {
+        0 => {
+            allow_copy.0 = true;
+            *fsm = 1;
+            return;
+        }
+        1 => {
+            allow_copy.0 = false;
+            *fsm = 2;
+            return;
+        }
+        2 => {
+            *fsm = 3;
+            return;
+        }
+
+        3 => {
+            let slice = readback.buffer.slice(..);
+            render_device.poll(Maintain::Wait);
+
+            let status = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let cb = status.clone();
+            slice.map_async(MapMode::Read, move |r| {
+                cb.store(
+                    if r.is_ok() { 1 } else { 2 },
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+            });
+
+            loop {
+                render_device.poll(Maintain::Poll);
+                match status.load(std::sync::atomic::Ordering::SeqCst) {
+                    0 => std::thread::yield_now(),
+                    1 => break,
+                    2 => {
+                        readback.buffer.unmap();
+                        *fsm = 0;
+                        return;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            {
+                let data = slice.get_mapped_range();
+                let gpu: &[GPUParticle] = bytemuck::cast_slice(&data);
+
+                // (2) Mirror GPU -> CPU state AND update sprites
+                for (i, p_gpu) in gpu.iter().enumerate() {
+                    // update CPU state so grid rebuild uses current positions
+                    let p_cpu = &mut sph.particles[i];
+                    p_cpu.pos.x = p_gpu.pos[0];
+                    p_cpu.pos.y = p_gpu.pos[1];
+                    p_cpu.vel.x = p_gpu.vel[0];
+                    p_cpu.vel.y = p_gpu.vel[1];
+                    p_cpu.acc.x = p_gpu.acc[0];
+                    p_cpu.acc.y = p_gpu.acc[1];
+                    p_cpu.rho = p_gpu.rho;
+                    p_cpu.p = p_gpu.p;
+                }
+
+                // update transforms (separate loop to avoid borrow clash)
+                for (vis, mut tf) in q.iter_mut() {
+                    let p = &gpu[vis.0];
+                    tf.translation.x = p.pos[0] * RENDER_SCALE;
+                    tf.translation.y = p.pos[1] * RENDER_SCALE;
+                }
+            }
+            readback.buffer.unmap();
+
+            *fsm = 4;
+            return;
+        }
+
+        4 => {
+            allow_copy.0 = false;
+            *fsm = 0;
+            return;
+        }
+        _ => *fsm = 0,
+    }
+}
+```
+
 
 
