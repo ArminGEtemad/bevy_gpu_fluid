@@ -868,6 +868,9 @@ leading to
 ```
 
 Now for a case of $\rho - \rho_0 = 30$ and an even very small relative error for the density (let's say $\text{Err}_\text{rel}^{\rho} = 0.5\%$) the relative error for the pressure becomes:
-$$0.5\%/30\cdot 1000 \approx 17\% $$
+```math
+0.5\%/30\cdot 1000 \approx 17\%
+```
+
 
 which looks like a huge deal but not really an issue or even meaningful! It is not meaningful because for the case of $\rho$ and $\rho_0$ not having a very big difference this relative error would explode!
