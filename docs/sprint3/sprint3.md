@@ -842,100 +842,32 @@ To run this, I needed a GPU-CPU cycle. And it was done as following:
 
 Of course, the end product won't work like this as this is only a prototype to make sure that the compute shader works. Also right now the visualization is still by bevy's sprites and not shaders. So lagging visuals are expected here.  
 
-```rust
-fn sync_sprites_from_gpu(
-    mut allow_copy: ResMut<AllowCopy>,
-    readback: Option<Res<ReadbackBuffer>>,
-    mut q: Query<(&ParticleVisual, &mut Transform)>,
-    render_device: Res<bevy::render::renderer::RenderDevice>,
-    mut sph: ResMut<SPHState>,
-    mut fsm: Local<u8>, // 0 copy, 1 disable, 2 wait, 3 map, 4 cool-down
-) {
-    let Some(readback) = readback else { return };
 
-    match *fsm {
-        0 => {
-            allow_copy.0 = true;
-            *fsm = 1;
-            return;
-        }
-        1 => {
-            allow_copy.0 = false;
-            *fsm = 2;
-            return;
-        }
-        2 => {
-            *fsm = 3;
-            return;
-        }
+# GPU Performance
+The performance test has no visual built in it. It runs for three different particle counts. Each of these cases run for three seconds and the average FPS is calculated. Program automatically swithces to the next particle count. 
 
-        3 => {
-            let slice = readback.buffer.slice(..);
-            render_device.poll(Maintain::Wait);
+# Parity Test
+in parity test the GPU does not do the integration. The results however pass through the density and pressure kernels.
+| frame | CPU                                                             | GPU (with `UseGpuIntegration(false)`)                                                            | copy/read-back                                                                                  |
+| ----- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 0 – 9 | calls `step()` once each frame **10 integration steps total** | every frame runs its *density/pressure kernels* on the latest CPU particle data (no integration) | `allow_copy == false` so nothing copied                                                          |
+| 10    | CPU stops stepping                                              | kernels run again on the *same* particle state                                                   | `allow_copy` set **true** so result is copied to a staging buffer right after the kernels finish |
+| 11    | no stepping                                                     | kernels run again (unchanged data)                                                               | `allow_copy` flipped back to **false**                                                          |
+| 12    | no stepping                                                     | kernels run again                                                                                | just waiting to ensure the previous copy is finished                                            |
+| 13    | no stepping                                                     | kernels run again                                                                                | buffer is mapped, CPU vs GPU comparison is performed, app exits                                 |
 
-            let status = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
-            let cb = status.clone();
-            slice.map_async(MapMode::Read, move |r| {
-                cb.store(
-                    if r.is_ok() { 1 } else { 2 },
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-            });
-
-            loop {
-                render_device.poll(Maintain::Poll);
-                match status.load(std::sync::atomic::Ordering::SeqCst) {
-                    0 => std::thread::yield_now(),
-                    1 => break,
-                    2 => {
-                        readback.buffer.unmap();
-                        *fsm = 0;
-                        return;
-                    }
-                    _ => unreachable!(),
-                }
-            }
-
-            {
-                let data = slice.get_mapped_range();
-                let gpu: &[GPUParticle] = bytemuck::cast_slice(&data);
-
-                // (2) Mirror GPU -> CPU state AND update sprites
-                for (i, p_gpu) in gpu.iter().enumerate() {
-                    // update CPU state so grid rebuild uses current positions
-                    let p_cpu = &mut sph.particles[i];
-                    p_cpu.pos.x = p_gpu.pos[0];
-                    p_cpu.pos.y = p_gpu.pos[1];
-                    p_cpu.vel.x = p_gpu.vel[0];
-                    p_cpu.vel.y = p_gpu.vel[1];
-                    p_cpu.acc.x = p_gpu.acc[0];
-                    p_cpu.acc.y = p_gpu.acc[1];
-                    p_cpu.rho = p_gpu.rho;
-                    p_cpu.p = p_gpu.p;
-                }
-
-                // update transforms (separate loop to avoid borrow clash)
-                for (vis, mut tf) in q.iter_mut() {
-                    let p = &gpu[vis.0];
-                    tf.translation.x = p.pos[0] * RENDER_SCALE;
-                    tf.translation.y = p.pos[1] * RENDER_SCALE;
-                }
-            }
-            readback.buffer.unmap();
-
-            *fsm = 4;
-            return;
-        }
-
-        4 => {
-            allow_copy.0 = false;
-            *fsm = 0;
-            return;
-        }
-        _ => *fsm = 0,
-    }
-}
+The partiy test wan't however the way I imagined it at first. And the reason could maybe be explained as following:
+```math
+p = k(\rho - \rho_0)\\
+\Rightarrow \Delta p = k \Delta \rho\\
+\Rightarrow \text{Err}_\text{rel}^{p} = \frac{\Delta p}{p} = \frac{\Delta \rho}{\rho - \rho_0}\\
+```
+leading to 
+```math
+\Rightarrow \text{Err}_\text{rel}^{p} = \frac{\text{Err}_\text{rel}^{\rho}}{\rho - \rho_0} \rho
 ```
 
+Now for a case of $\rho - \rho_0 = 30$ and an even very small relative error for the density (let's say $\text{Err}_\text{rel}^{\rho} = 0.5\%$) the relative error for the pressure becomes:
+$$0.5\%/30\cdot 1000 \approx 17\% $$
 
-
+which looks like a huge deal but not really an issue or even meaningful! It is not meaningful because for the case of $\rho$ and $\rho_0$ not having a very big difference this relative error would explode!
