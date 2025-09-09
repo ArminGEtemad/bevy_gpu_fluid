@@ -1,3 +1,5 @@
+//TODO make it into a test
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Maintain, MapMode};
@@ -138,7 +140,7 @@ fn readback(
                     }
 
                     info!(
-                        "10-step parity (GPU vs CPU):  ρ max_rel = {:.3}%  |  p max_abs = {:.3}  |  p max_rel_all = {:.3}%  |  p max_rel(|p|>{}) = {:.3}% (n={})",
+                        "10-step parity (GPU vs CPU):  rho max_rel = {:.3}%  |  p max_abs = {:.3}  |  p max_rel_all = {:.3}%  |  p max_rel(|p|>{}) = {:.3}% (n={})",
                         max_rel_rho * 100.0,
                         max_abs_p,
                         max_rel_p_all * 100.0,
