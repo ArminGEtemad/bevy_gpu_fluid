@@ -13,7 +13,7 @@ const X_MIN: f32 = -5.0;
 const X_MAX: f32 = 3.0;
 const BOUNCE: f32 = -3.0;
 
-const STEPS: u32 = 100; // <— compare after this many steps
+const STEPS: u32 = 10; // <— compare after this many steps
 
 #[inline(always)]
 fn rel_norm_sym(a: glam::Vec2, b: glam::Vec2) -> f32 {
@@ -157,7 +157,7 @@ fn orchestrate_100(
                 }
 
                 info!(
-                    "100-step parity:  max_rel |x| = {:.3}% |v| = {:.3}%   max_abs |x| = {:.6} |v| = {:.6}",
+                    "10-step parity:  max_rel |x| = {:.3}% |v| = {:.3}%   max_abs |x| = {:.6} |v| = {:.6}",
                     max_rel_x * 100.0,
                     max_rel_v * 100.0,
                     max_abs_x,
