@@ -843,10 +843,10 @@ To run this, I needed a GPU-CPU cycle. And it was done as following:
 Of course, the end product won't work like this as this is only a prototype to make sure that the compute shader works. Also right now the visualization is still by bevy's sprites and not shaders. So lagging visuals are expected here.  
 
 
-# GPU Performance
+## GPU Performance
 The performance test has no visual built in it. It runs for three different particle counts. Each of these cases run for three seconds and the average FPS is calculated. Program automatically swithces to the next particle count. 
 
-# Parity Test
+## Parity Test
 in parity test the GPU does not do the integration. The results however pass through the density and pressure kernels.
 | frame | CPU                                                             | GPU (with `UseGpuIntegration(false)`)                                                            | copy/read-back                                                                                  |
 | ----- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
@@ -860,7 +860,7 @@ The partiy test wan't however the way I imagined it at first. And the reason cou
 ```math
 p = k(\rho - \rho_0)\\
 \Rightarrow \Delta p = k \Delta \rho\\
-\Rightarrow \text{Err}_\text{rel}^{p} = \frac{\Delta p}{p} = \frac{\Delta \rho}{\rho - \rho_0}\\
+\Rightarrow \text{Err}_\text{rel}^{p} = \frac{\Delta p}{p} = \frac{\Delta \rho}{\rho - \rho_0}
 ```
 leading to 
 ```math
@@ -874,3 +874,19 @@ Now for a case of $\rho - \rho_0 = 30$ and an even very small relative error for
 
 
 which looks like a huge deal but not really an issue or even meaningful! It is not meaningful because for the case of $\rho$ and $\rho_0$ not having a very big difference this relative error would explode!
+
+## Integration Parity 
+We do the same thing with integral. Here, I looked at the results after 10 steps
+> 10-step parity: max_rel |x| = 65.452% |v| = 95.936% max_abs |x| = 0.000518 |v| = 0.245602 
+> 1 idx 4970: |Delta_x|=0.000518 CPU x=(-0.000691,2.800556) GPU x=(-0.000285,2.800233) |Delta_v|=0.090401 
+> 2 idx 5040: |Delta_x|=0.000518 CPU x=(2.800690,2.800556) GPU x=(2.800285,2.800233) |Delta_v|=0.090398 
+> 3 idx 354: |Delta_x|=0.000518 CPU x=(2.800874,0.159865) GPU x=(2.800364,0.159948) |Delta_v|=0.092175
+
+but after 100 steps
+
+> 100-step parity: max_rel |x| = 20.355% |v| = 185.992% max_abs |x| = 0.005448 |v| = 2.734728 
+> 1 idx 1775: |Delta_x|=0.005448 CPU x=(-0.024027,0.987615) GPU x=(-0.019788,0.991036) |Delta_v|=0.073715 
+> 2 idx 1704: |Delta_x|=0.005448 CPU x=(-0.024027,0.947615) GPU x=(-0.019788,0.951036) |Delta_v|=0.073710 
+> 3 idx 1633: |Delta_x|=0.005448 CPU x=(-0.024027,0.907615) GPU x=(-0.019788,0.911036) |Delta_v|=0.073714
+
+The integration is drifting really radically from CPU. which is understandable since CPU order is hash-map dependent while GPU order is fixed but different. Sine I am aiming to make the code 100% on GPU, I decide to move on. I don't believe there is any need to spend more time here. 
