@@ -1,5 +1,3 @@
-// TODO make this code into a test
-
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_gpu_fluid::cpu::sph2d::SPHState;
