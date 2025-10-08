@@ -13,7 +13,7 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
-use crate::gpu::grid_build::init_grid_build_bind_group_layout;
+use crate::gpu::grid_build::{init_grid_build_bind_group_layout, init_grid_build_buffers};
 use crate::gpu::pipeline::{
     add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
     prepare_integrate_pipeline, prepare_pressure_pipeline,
@@ -77,6 +77,7 @@ pub struct ExtractedGrid {
     pub params_buf: Buffer,
     pub starts_buf: Buffer,
     pub entries_buf: Buffer,
+    pub num_cells: usize,
 }
 
 #[derive(Resource)]
@@ -516,6 +517,7 @@ pub fn extract_grid_buffers(mut commands: Commands, grid: Extract<Res<GridBuffer
         params_buf: grid.params_buf.clone(),
         starts_buf: grid.starts_buf.clone(),
         entries_buf: grid.entries_buf.clone(),
+        num_cells: grid.num_cells,
     });
 }
 
@@ -758,6 +760,9 @@ impl Plugin for GPUSPHPlugin {
                     prepare_forces_pipeline.in_set(RenderSet::Prepare),
                     prepare_integrate_pipeline.in_set(RenderSet::Prepare),
                     init_grid_build_bind_group_layout.in_set(RenderSet::Prepare),
+                    init_grid_build_buffers
+                        .in_set(RenderSet::Prepare)
+                        .after(init_grid_build_bind_group_layout),
                 ),
             );
 
