@@ -30,3 +30,10 @@ pub struct IntegrateParams {
     pub x_max: f32,
     pub bounce: f32, // mast be negative
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GridBuildParams {
+    pub num_cells: u32,
+    pub _pad: [u32; 3], // 16B alignment
+}
