@@ -13,6 +13,7 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
+use crate::gpu::grid_build::init_grid_build_bind_group_layout;
 use crate::gpu::pipeline::{
     add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
     prepare_integrate_pipeline, prepare_pressure_pipeline,
@@ -756,6 +757,7 @@ impl Plugin for GPUSPHPlugin {
                     prepare_pressure_pipeline.in_set(RenderSet::Prepare),
                     prepare_forces_pipeline.in_set(RenderSet::Prepare),
                     prepare_integrate_pipeline.in_set(RenderSet::Prepare),
+                    init_grid_build_bind_group_layout.in_set(RenderSet::Prepare),
                 ),
             );
 
