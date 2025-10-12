@@ -1,6 +1,3 @@
-/* used https://docs.rs/bevy/latest/bevy/render/render_resource/struct.ComputePass.html?utm_source=chatgpt.com
-as my source for computepass */
-
 use std::borrow::Cow;
 
 use bevy::prelude::*;
@@ -18,6 +15,7 @@ use crate::gpu::buffers::{
     ExtractedAllowCopy, ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup,
     ParticleBindGroupLayout,
 };
+use crate::gpu::grid_build::{GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer};
 
 // ==================== resources ======================================
 #[derive(Resource)]
@@ -36,6 +34,15 @@ struct DensityNode;
 
 #[derive(Resource)]
 pub struct IntegratePipeline(pub ComputePipeline);
+
+#[derive(Resource)]
+pub struct ClearCountsPipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct ClearCountsLabel;
+
+#[derive(Default)]
+pub struct ClearCountsNode;
 
 // =====================================================================
 
@@ -268,4 +275,107 @@ pub fn add_density_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
     graph.add_node(DensityPassLabel, DensityNode::default());
     graph.add_node_edge(DensityPassLabel, CameraDriverLabel);
+}
+
+pub fn prepare_clear_counts_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Option<Res<GridBuildBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+    mut printed: Local<bool>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("clear_counts_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            push_constant_ranges: vec![],
+            shader_defs: vec![],
+            entry_point: "clear_counts".into(),
+            shader,
+            zero_initialize_workgroup_memory: true,
+        };
+        *cached = Some(pipeline_cache.queue_compute_pipeline(desc));
+        return;
+    }
+    if let Some(id) = *cached {
+        if let Some(_p) = pipeline_cache.get_compute_pipeline(id) {
+            if !*printed {
+                info!("Info Prepare: clear_counts pipeline is READY");
+                *printed = true;
+            }
+            commands.insert_resource(crate::gpu::pipeline::ClearCountsPipeline(id));
+        }
+    }
+}
+
+impl Node for ClearCountsNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        if world.get_resource::<ClearCountsPipeline>().is_none() {
+            info!("Info Node: clear_counts SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBuildBindGroup>().is_none() {
+            info!("Info Node: clear_counts SKIPPED (no grid-build bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBuildParamsBuffer>().is_none() {
+            info!("Info Node: clear_counts SKIPPED (no grid-build params)");
+            return Ok(());
+        }
+
+        let pipeline_res = world.get_resource::<ClearCountsPipeline>().unwrap();
+        let bind_group = world.get_resource::<GridBuildBindGroup>().unwrap();
+        let gb = world.get_resource::<GridBuildParamsBuffer>().unwrap();
+
+        if gb.value.num_cells == 0 {
+            info!("Info Node: clear_counts SKIPPED (num_cells = 0)");
+            return Ok(());
+        }
+
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = pipeline_cache.get_compute_pipeline(pipeline_res.0) else {
+            info!("Info Node: clear_counts SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        let groups = ((gb.value.num_cells + 255) / 256).max(1);
+        info!(
+            "Info Node: clear_counts DISPATCH, cells = {}, groups = {}",
+            gb.value.num_cells, groups
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("ClearCountsPass"),
+                    timestamp_writes: None,
+                });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group.0, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+
+        Ok(())
+    }
+}
+
+pub fn add_clear_counts_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(ClearCountsLabel, ClearCountsNode::default());
+
+    use crate::gpu::pipeline::DensityPassLabel;
+    let _ = graph.add_node_edge(ClearCountsLabel, DensityPassLabel);
 }
