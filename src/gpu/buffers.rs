@@ -15,8 +15,9 @@ use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{init_grid_build_bind_group_layout, init_grid_build_buffers};
 use crate::gpu::pipeline::{
-    add_density_node_to_graph, prepare_density_pipeline, prepare_forces_pipeline,
-    prepare_integrate_pipeline, prepare_pressure_pipeline,
+    add_clear_counts_node_to_graph, add_density_node_to_graph, prepare_clear_counts_pipeline,
+    prepare_density_pipeline, prepare_forces_pipeline, prepare_integrate_pipeline,
+    prepare_pressure_pipeline,
 };
 use glam::{IVec2, Vec2};
 
@@ -763,9 +764,13 @@ impl Plugin for GPUSPHPlugin {
                     init_grid_build_buffers
                         .in_set(RenderSet::Prepare)
                         .after(init_grid_build_bind_group_layout),
+                    prepare_clear_counts_pipeline
+                        .in_set(RenderSet::Prepare)
+                        .after(init_grid_build_bind_group_layout),
                 ),
             );
 
         add_density_node_to_graph(render_app);
+        add_clear_counts_node_to_graph(render_app);
     }
 }
