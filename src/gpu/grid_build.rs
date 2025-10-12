@@ -1,8 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingType, Buffer,
-    BufferBindingType, BufferDescriptor, BufferInitDescriptor, BufferUsages,
-    CachedComputePipelineId, ShaderStages,
+    BufferBindingType, BufferDescriptor, BufferInitDescriptor, BufferUsages, ShaderStages,
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 
@@ -27,9 +26,6 @@ pub struct GridBuildParamsBuffer {
 // binding 0 = counts, 1 = params
 #[derive(Resource)]
 pub struct GridBuildBindGroup(pub BindGroup);
-
-#[derive(Resource)]
-pub struct ClearCountsPipeline(pub CachedComputePipelineId);
 
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
@@ -89,7 +85,7 @@ pub fn init_grid_build_buffers(
 
     let gb_val = crate::gpu::ffi::GridBuildParams {
         num_cells,
-        _pad: [0; 3],
+        _pad: [0; 7],
     };
     let gb_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("grid_build_params"),
