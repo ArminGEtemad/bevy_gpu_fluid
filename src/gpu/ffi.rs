@@ -35,5 +35,5 @@ pub struct IntegrateParams {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GridBuildParams {
     pub num_cells: u32,
-    pub _pad: [u32; 3], // 16B alignment
+    pub _pad: [u32; 7], // 16B alignment
 }
