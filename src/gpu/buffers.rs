@@ -13,7 +13,10 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
-use crate::gpu::grid_build::{init_grid_build_bind_group_layout, init_grid_build_buffers};
+use crate::gpu::grid_build::{
+    init_grid_build_bind_group_layout, init_grid_build_buffers,
+    init_grid_histogram_bind_group_layout,
+};
 use crate::gpu::pipeline::{
     add_clear_counts_node_to_graph, add_density_node_to_graph, prepare_clear_counts_pipeline,
     prepare_density_pipeline, prepare_forces_pipeline, prepare_integrate_pipeline,
@@ -767,6 +770,7 @@ impl Plugin for GPUSPHPlugin {
                     prepare_clear_counts_pipeline
                         .in_set(RenderSet::Prepare)
                         .after(init_grid_build_bind_group_layout),
+                    //init_grid_histogram_bind_group_layout.in_set(RenderSet::Prepare),
                 ),
             );
 

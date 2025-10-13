@@ -27,6 +27,9 @@ pub struct GridBuildParamsBuffer {
 #[derive(Resource)]
 pub struct GridBuildBindGroup(pub BindGroup);
 
+#[derive(Resource, Clone)]
+pub struct GridHistogramBindgroupLayout(pub BindGroupLayout);
+
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
@@ -117,4 +120,50 @@ pub fn init_grid_build_buffers(
         value: gb_val,
     });
     commands.insert_resource(GridBuildBindGroup(bind_group));
+}
+
+pub fn init_grid_histogram_bind_group_layout(
+    mut command: Commands,
+    render_device: Res<RenderDevice>,
+) {
+    // binding(0): particle SSBO
+    // binding(1): counts SSBO
+    // binding(2): GridParams UBO
+    let layout = render_device.create_bind_group_layout(
+        Some("grid_histogram_bgl"),
+        &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+
+    command.insert_resource(GridHistogramBindgroupLayout(layout));
 }
