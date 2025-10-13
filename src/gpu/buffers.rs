@@ -770,7 +770,7 @@ impl Plugin for GPUSPHPlugin {
                     prepare_clear_counts_pipeline
                         .in_set(RenderSet::Prepare)
                         .after(init_grid_build_bind_group_layout),
-                    //init_grid_histogram_bind_group_layout.in_set(RenderSet::Prepare),
+                    init_grid_histogram_bind_group_layout.in_set(RenderSet::Prepare),
                 ),
             );
 
