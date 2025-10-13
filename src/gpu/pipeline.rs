@@ -15,7 +15,10 @@ use crate::gpu::buffers::{
     ExtractedAllowCopy, ExtractedParticleBuffer, ExtractedReadbackBuffer, ParticleBindGroup,
     ParticleBindGroupLayout,
 };
-use crate::gpu::grid_build::{GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer};
+use crate::gpu::grid_build::{
+    GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer, GridHistogramBindGroup,
+    GridHistogramBindGroupLayout,
+};
 
 // ==================== resources ======================================
 #[derive(Resource)]
@@ -43,6 +46,15 @@ pub struct ClearCountsLabel;
 
 #[derive(Default)]
 pub struct ClearCountsNode;
+
+#[derive(Resource)]
+pub struct HistogramPipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct HistogramPassLabel;
+
+#[derive(Default)]
+pub struct HistogramNode;
 
 // =====================================================================
 
@@ -283,11 +295,13 @@ pub fn prepare_clear_counts_pipeline(
     layout: Option<Res<GridBuildBindGroupLayout>>,
     assets: Res<AssetServer>,
     mut cached: Local<Option<CachedComputePipelineId>>,
-    mut printed: Local<bool>,
+    mut printed: Local<u8>, // 0 = none, 1 = queued, 2 = ready
 ) {
     let Some(layout) = layout else {
+        // layout not ready this frame; normal on startup
         return;
     };
+
     if cached.is_none() {
         let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
         let desc = ComputePipelineDescriptor {
@@ -295,20 +309,64 @@ pub fn prepare_clear_counts_pipeline(
             layout: vec![layout.0.clone()],
             push_constant_ranges: vec![],
             shader_defs: vec![],
-            entry_point: "clear_counts".into(),
+            entry_point: Cow::Borrowed("clear_counts"),
             shader,
             zero_initialize_workgroup_memory: true,
         };
-        *cached = Some(pipeline_cache.queue_compute_pipeline(desc));
+        let id = pipeline_cache.queue_compute_pipeline(desc);
+        *cached = Some(id);
+        commands.insert_resource(ClearCountsPipeline(id));
+        if *printed == 0 {
+            info!("Info Prepare: clear_counts QUEUED");
+            *printed = 1;
+        }
         return;
     }
+
     if let Some(id) = *cached {
-        if let Some(_p) = pipeline_cache.get_compute_pipeline(id) {
-            if !*printed {
-                info!("Info Prepare: clear_counts pipeline is READY");
-                *printed = true;
-            }
-            commands.insert_resource(crate::gpu::pipeline::ClearCountsPipeline(id));
+        if pipeline_cache.get_compute_pipeline(id).is_some() && *printed < 2 {
+            info!("Info Prepare: clear_counts READY");
+            *printed = 2;
+        }
+    }
+}
+pub fn prepare_histogram_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Option<Res<GridHistogramBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+    mut printed: Local<u8>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+
+    if cached.is_none() {
+        let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+        let desc = ComputePipelineDescriptor {
+            label: Some("grid_histogram_pipeline".into()),
+            layout: vec![layout.0.clone()],
+            push_constant_ranges: vec![],
+            shader_defs: vec![],
+            entry_point: Cow::Borrowed("histogram"),
+            shader,
+            zero_initialize_workgroup_memory: true,
+        };
+        let id = pipeline_cache.queue_compute_pipeline(desc);
+        *cached = Some(id);
+        commands.insert_resource(HistogramPipeline(id));
+        if *printed == 0 {
+            info!("Info Prepare: histogram QUEUED");
+            *printed = 1;
+        }
+        return;
+    }
+
+    if let Some(id) = *cached {
+        if pipeline_cache.get_compute_pipeline(id).is_some() && *printed < 2 {
+            info!("Info Prepare: histogram READY");
+            *printed = 2;
         }
     }
 }
@@ -378,4 +436,71 @@ pub fn add_clear_counts_node_to_graph(render_app: &mut bevy::app::SubApp) {
 
     use crate::gpu::pipeline::DensityPassLabel;
     let _ = graph.add_node_edge(ClearCountsLabel, DensityPassLabel);
+}
+
+impl Node for HistogramNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        // === debugging style consistent with your Density node ===
+        if world.get_resource::<HistogramPipeline>().is_none() {
+            info!("Info Node: histogram SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world.get_resource::<GridHistogramBindGroup>().is_none() {
+            info!("Info Node: histogram SKIPPED (no histogram bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<ExtractedParticleBuffer>().is_none() {
+            info!("Info Node: histogram SKIPPED (no particle buffer)");
+            return Ok(());
+        }
+
+        let pipeline_res = world.get_resource::<HistogramPipeline>().unwrap();
+        let bind_group = world.get_resource::<GridHistogramBindGroup>().unwrap();
+        let extracted = world.get_resource::<ExtractedParticleBuffer>().unwrap();
+
+        let n = extracted.num_particles.max(1);
+        let workgroups = (n + 255) / 256;
+
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = pipeline_cache.get_compute_pipeline(pipeline_res.0) else {
+            info!("Info Node: histogram SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        info!(
+            "Info Node: histogram DISPATCH, N = {}, groups = {}",
+            n, workgroups
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("HistogramPass"),
+                    timestamp_writes: None,
+                });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group.0, &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+
+        Ok(())
+    }
+}
+
+pub fn add_histogram_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(HistogramPassLabel, HistogramNode::default());
+
+    // Run order: ClearCounts -> Histogram -> Density
+    use crate::gpu::pipeline::{ClearCountsLabel, DensityPassLabel};
+    let _ = graph.add_node_edge(ClearCountsLabel, HistogramPassLabel);
+    let _ = graph.add_node_edge(HistogramPassLabel, DensityPassLabel);
 }

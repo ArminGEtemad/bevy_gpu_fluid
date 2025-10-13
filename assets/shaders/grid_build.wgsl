@@ -1,6 +1,6 @@
-struct U32Buf {
-    data: array<u32>,
-};
+struct U32AtomicBuf {
+    data: array<atomic<u32>>,
+}
 
 struct GridBuildParams {
     num_cells: u32,
@@ -23,20 +23,19 @@ struct GridParams {
     _pad1: vec2<u32>,
 };
 
-@group(0) @binding(0) var<storage, read_write> counts: U32Buf;
+@group(0) @binding(0) var<storage, read_write> counts_rw: U32AtomicBuf;
 @group(0) @binding(1) var<uniform> gb: GridBuildParams;
 
-// not used yet
 @compute @workgroup_size(256)
 fn clear_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i < gb.num_cells {
-        counts.data[i] = 0u;
+        atomicStore(&counts_rw.data[i], 0u);
     }
 }
 
 @group(0) @binding(0) var<storage, read> particles: ParticleBuf;
-@group(0) @binding(1) var<storage, read_write> counts: U32Buf;
+@group(0) @binding(1) var<storage, read_write> counts_hist: U32AtomicBuf;
 @group(0) @binding(2) var<uniform> grid: GridParams;
 
 fn cell_index(p: vec2<f32>) -> u32 {
@@ -52,7 +51,7 @@ fn cell_index(p: vec2<f32>) -> u32 {
 fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i >= arrayLength(&particles.data) { return; }
-
     let idx = cell_index(particles.data[i].pos);
-    atomicAdd(&counts.data[idx], 1u);
+    // atomic increment
+    _ = atomicAdd(&counts_hist.data[idx], 1u);
 }
