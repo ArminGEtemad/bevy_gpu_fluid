@@ -35,9 +35,9 @@ fn clear_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-@group(1) @binding(0) var<storage, read> particles: ParticleBuf;
-@group(1) @binding(1) var<storage, read_write> counts: U32Buf;
-@group(1) @binding(2) var<uniform> grid: GridParams;
+@group(0) @binding(0) var<storage, read> particles: ParticleBuf;
+@group(0) @binding(1) var<storage, read_write> counts: U32Buf;
+@group(0) @binding(2) var<uniform> grid: GridParams;
 
 fn cell_index(p: vec2<f32>) -> u32 {
     let rel = (p - grid.min_world) / grid.cell_size;

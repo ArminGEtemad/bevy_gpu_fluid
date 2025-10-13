@@ -14,7 +14,7 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{
-    init_grid_build_bind_group_layout, init_grid_build_buffers,
+    init_grid_build_bind_group_layout, init_grid_build_buffers, init_grid_histogram_bind_group,
     init_grid_histogram_bind_group_layout,
 };
 use crate::gpu::pipeline::{
@@ -771,6 +771,11 @@ impl Plugin for GPUSPHPlugin {
                         .in_set(RenderSet::Prepare)
                         .after(init_grid_build_bind_group_layout),
                     init_grid_histogram_bind_group_layout.in_set(RenderSet::Prepare),
+                    init_grid_histogram_bind_group
+                        .in_set(RenderSet::Prepare)
+                        .after(init_grid_histogram_bind_group_layout)
+                        .after(init_grid_build_buffers)
+                        .after(prepare_particle_bind_group),
                 ),
             );
 
