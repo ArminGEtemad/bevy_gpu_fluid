@@ -1,6 +1,9 @@
 struct U32AtomicBuf {
     data: array<atomic<u32>>,
 }
+struct U32Buf {
+    data: array<u32>,
+};
 
 struct GridBuildParams {
     num_cells: u32,

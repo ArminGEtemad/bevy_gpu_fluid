@@ -34,6 +34,18 @@ pub struct GridHistogramBindGroupLayout(pub BindGroupLayout);
 #[derive(Resource)]
 pub struct GridHistogramBindGroup(pub BindGroup);
 
+#[derive(Resource)]
+pub struct GridStartsBuffer {
+    pub buffer: Buffer,
+    pub num_cells: u32,
+}
+
+#[derive(Resource, Clone)]
+pub struct GridCountsToStartsBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource)]
+pub struct GridCountsToStartsBindGroup(pub BindGroup);
+
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
@@ -205,4 +217,92 @@ pub fn init_grid_histogram_bind_group(
     );
 
     commands.insert_resource(GridHistogramBindGroup(bind_group));
+}
+
+pub fn init_counts_to_starts_bgl(mut commands: Commands, render_device: Res<RenderDevice>) {
+    let layout = render_device.create_bind_group_layout(
+        Some("grid_counts_to_starts_bgl"),
+        &[
+            // counts (read-only STORAGE); we will read via atomicLoad in WGSL
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // starts (rw STORAGE)
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+    commands.insert_resource(GridCountsToStartsBindGroupLayout(layout));
+}
+
+pub fn init_starts_buffer_and_bg(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    extracted_grid: Option<Res<ExtractedGrid>>,
+    counts: Option<Res<GridCountsBuffer>>,
+    layout: Option<Res<GridCountsToStartsBindGroupLayout>>,
+    existing: Option<Res<GridStartsBuffer>>,
+) {
+    let (Some(grid), Some(counts), Some(layout)) = (extracted_grid, counts, layout) else {
+        return;
+    };
+
+    let num_cells = grid.num_cells as u32;
+    if num_cells == 0 {
+        return;
+    }
+
+    // no-op if already correct size
+    if let Some(starts) = existing {
+        if starts.num_cells == num_cells {
+            return;
+        }
+    }
+
+    let size_bytes = (grid.num_cells.max(1) * std::mem::size_of::<u32>()) as u64;
+    let starts_buf = render_device.create_buffer(&BufferDescriptor {
+        label: Some("grid_starts"),
+        size: size_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // store the buffer resource
+    let starts_res = GridStartsBuffer {
+        buffer: starts_buf,
+        num_cells,
+    };
+    // create a bind group for the future counts->starts pass
+    let bg = render_device.create_bind_group(
+        Some("grid_counts_to_starts_bg"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: counts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: starts_res.buffer.as_entire_binding(),
+            },
+        ],
+    );
+
+    commands.insert_resource(starts_res);
+    commands.insert_resource(GridCountsToStartsBindGroup(bg));
 }
