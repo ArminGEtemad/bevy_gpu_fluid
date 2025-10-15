@@ -16,7 +16,8 @@ use crate::gpu::buffers::{
     ParticleBindGroupLayout,
 };
 use crate::gpu::grid_build::{
-    GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer, GridHistogramBindGroup,
+    GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer,
+    GridCountsToStartsBindGroup, GridCountsToStartsBindGroupLayout, GridHistogramBindGroup,
     GridHistogramBindGroupLayout,
 };
 
@@ -55,6 +56,15 @@ pub struct HistogramPassLabel;
 
 #[derive(Default)]
 pub struct HistogramNode;
+
+#[derive(Resource)]
+pub struct PrefixSumNaivePipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct PrefixSumNaivePassLabel;
+
+#[derive(Default)]
+pub struct PrefixSumNaiveNode;
 
 // =====================================================================
 
@@ -503,4 +513,108 @@ pub fn add_histogram_node_to_graph(render_app: &mut bevy::app::SubApp) {
     use crate::gpu::pipeline::{ClearCountsLabel, DensityPassLabel};
     let _ = graph.add_node_edge(ClearCountsLabel, HistogramPassLabel);
     let _ = graph.add_node_edge(HistogramPassLabel, DensityPassLabel);
+}
+
+pub fn prepare_prefix_sum_naive_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Option<Res<GridCountsToStartsBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_prefix_sum_naive_pipeline".into()),
+        layout: vec![layout.0.clone()], // counts (ro), starts (rw)
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: Cow::Borrowed("prefix_sum_naive"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = pipeline_cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(PrefixSumNaivePipeline(id));
+}
+
+impl Node for PrefixSumNaiveNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        if world.get_resource::<PrefixSumNaivePipeline>().is_none() {
+            info!("Info Node: prefix_sum_naive SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world
+            .get_resource::<GridCountsToStartsBindGroup>()
+            .is_none()
+        {
+            info!("Info Node: prefix_sum_naive SKIPPED (no bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBuildParamsBuffer>().is_none() {
+            info!("Info Node: prefix_sum_naive SKIPPED (no params)");
+            return Ok(());
+        }
+
+        let pip_id = world.get_resource::<PrefixSumNaivePipeline>().unwrap().0;
+        let bg = &world
+            .get_resource::<GridCountsToStartsBindGroup>()
+            .unwrap()
+            .0;
+        let gb = &world.get_resource::<GridBuildParamsBuffer>().unwrap().value;
+
+        if gb.num_cells == 0 {
+            info!("Info Node: prefix_sum_naive SKIPPED (num_cells = 0)");
+            return Ok(());
+        }
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip_id) else {
+            info!("Info Node: prefix_sum_naive SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        let groups = ((gb.num_cells + 255) / 256).max(1);
+        info!(
+            "Info Node: prefix_sum_naive DISPATCH, cells = {}, groups = {}",
+            gb.num_cells, groups
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("PrefixSumNaivePass"),
+                    timestamp_writes: None,
+                });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+
+        Ok(())
+    }
+}
+pub fn add_prefix_sum_naive_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(PrefixSumNaivePassLabel, PrefixSumNaiveNode::default());
+
+    // Order: ClearCounts -> Histogram -> PrefixSumNaive -> Density
+    use crate::gpu::pipeline::{ClearCountsLabel, DensityPassLabel, HistogramPassLabel};
+    let _ = graph.add_node_edge(ClearCountsLabel, PrefixSumNaivePassLabel);
+    let _ = graph.add_node_edge(HistogramPassLabel, PrefixSumNaivePassLabel);
+    let _ = graph.add_node_edge(PrefixSumNaivePassLabel, DensityPassLabel);
 }

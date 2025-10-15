@@ -58,3 +58,22 @@ fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
     // atomic increment
     _ = atomicAdd(&counts_hist.data[idx], 1u);
 }
+
+@group(0) @binding(0) var<storage, read> counts_ro : U32AtomicBuf;
+@group(0) @binding(1) var<storage, read_write> starts_rw : U32Buf;
+
+@compute @workgroup_size(256)
+fn prefix_sum_naive(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&counts_ro.data);
+    if i >= n { return; }
+
+    var sum: u32 = 0u;
+    var j: u32 = 0u;
+    loop {
+        if j >= i { break; }
+        sum += atomicLoad(&counts_ro.data[j]);
+        j += 1u;
+    }
+    starts_rw.data[i] = sum;
+}

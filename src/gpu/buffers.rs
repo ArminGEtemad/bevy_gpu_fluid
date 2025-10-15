@@ -20,8 +20,9 @@ use crate::gpu::grid_build::{
 };
 use crate::gpu::pipeline::{
     add_clear_counts_node_to_graph, add_density_node_to_graph, add_histogram_node_to_graph,
-    prepare_clear_counts_pipeline, prepare_density_pipeline, prepare_forces_pipeline,
-    prepare_histogram_pipeline, prepare_integrate_pipeline, prepare_pressure_pipeline,
+    add_prefix_sum_naive_node_to_graph, prepare_clear_counts_pipeline, prepare_density_pipeline,
+    prepare_forces_pipeline, prepare_histogram_pipeline, prepare_integrate_pipeline,
+    prepare_prefix_sum_naive_pipeline, prepare_pressure_pipeline,
 };
 use glam::{IVec2, Vec2};
 
@@ -786,11 +787,16 @@ impl Plugin for GPUSPHPlugin {
                         .after(init_counts_to_starts_bgl)
                         .after(init_grid_build_buffers)
                         .after(extract_grid_buffers),
+                    prepare_prefix_sum_naive_pipeline
+                        .in_set(RenderSet::Prepare)
+                        .after(init_counts_to_starts_bgl)
+                        .after(init_starts_buffer_and_bg),
                 ),
             );
 
         add_density_node_to_graph(render_app);
         add_clear_counts_node_to_graph(render_app);
         add_histogram_node_to_graph(render_app);
+        add_prefix_sum_naive_node_to_graph(render_app);
     }
 }
