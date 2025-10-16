@@ -46,6 +46,19 @@ pub struct GridCountsToStartsBindGroupLayout(pub BindGroupLayout);
 #[derive(Resource)]
 pub struct GridCountsToStartsBindGroup(pub BindGroup);
 
+#[derive(Resource)]
+pub struct GridBlockSumsBuffer {
+    pub buffer: Buffer,
+    pub num_blocks: u32,
+}
+
+// BGL for block_scan: 0=counts(ro), 1=starts(rw), 2=block_sums(rw)
+#[derive(Resource, Clone)]
+pub struct GridBlockScanBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource)]
+pub struct GridBlockScanBindGroup(pub BindGroup);
+
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
@@ -305,4 +318,106 @@ pub fn init_starts_buffer_and_bg(
 
     commands.insert_resource(starts_res);
     commands.insert_resource(GridCountsToStartsBindGroup(bg));
+}
+
+pub fn init_block_scan_bgl(mut commands: Commands, render_device: Res<RenderDevice>) {
+    let layout = render_device.create_bind_group_layout(
+        Some("grid_block_scan_bgl"),
+        &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+    commands.insert_resource(GridBlockScanBindGroupLayout(layout));
+}
+
+pub fn init_block_sums_and_bg(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    grid: Option<Res<ExtractedGrid>>,
+    counts: Option<Res<GridCountsBuffer>>,
+    starts: Option<Res<GridStartsBuffer>>,
+    layout: Option<Res<GridBlockScanBindGroupLayout>>,
+    existing: Option<Res<GridBlockSumsBuffer>>,
+) {
+    let (Some(grid), Some(counts), Some(starts), Some(layout)) = (grid, counts, starts, layout)
+    else {
+        return;
+    };
+
+    // one block per 256 cells (ceil)
+    let num_cells = grid.num_cells as u32;
+    if num_cells == 0 {
+        return;
+    }
+    let num_blocks = ((num_cells + 255) / 256).max(1);
+
+    if let Some(bs) = &existing {
+        if bs.num_blocks == num_blocks {
+            // still (re)create BG in case buffers changed
+        }
+    }
+
+    let block_sums_size = (num_blocks as usize * std::mem::size_of::<u32>()) as u64;
+    let block_sums_buf = render_device.create_buffer(&BufferDescriptor {
+        label: Some("grid_block_sums"),
+        size: block_sums_size.max(4),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let block_sums_res = GridBlockSumsBuffer {
+        buffer: block_sums_buf,
+        num_blocks,
+    };
+
+    let bg = render_device.create_bind_group(
+        Some("grid_block_scan_bg"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: counts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: starts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: block_sums_res.buffer.as_entire_binding(),
+            },
+        ],
+    );
+
+    commands.insert_resource(block_sums_res);
+    commands.insert_resource(GridBlockScanBindGroup(bg));
 }
