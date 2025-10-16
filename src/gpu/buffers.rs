@@ -14,15 +14,16 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{
-    init_counts_to_starts_bgl, init_grid_build_bind_group_layout, init_grid_build_buffers,
-    init_grid_histogram_bind_group, init_grid_histogram_bind_group_layout,
-    init_starts_buffer_and_bg,
+    init_block_scan_bgl, init_block_sums_and_bg, init_counts_to_starts_bgl,
+    init_grid_build_bind_group_layout, init_grid_build_buffers, init_grid_histogram_bind_group,
+    init_grid_histogram_bind_group_layout, init_starts_buffer_and_bg,
 };
 use crate::gpu::pipeline::{
-    add_clear_counts_node_to_graph, add_density_node_to_graph, add_histogram_node_to_graph,
-    add_prefix_sum_naive_node_to_graph, prepare_clear_counts_pipeline, prepare_density_pipeline,
-    prepare_forces_pipeline, prepare_histogram_pipeline, prepare_integrate_pipeline,
-    prepare_prefix_sum_naive_pipeline, prepare_pressure_pipeline,
+    add_block_scan_node_to_graph, add_clear_counts_node_to_graph, add_density_node_to_graph,
+    add_histogram_node_to_graph, add_prefix_sum_naive_node_to_graph, prepare_block_scan_pipeline,
+    prepare_clear_counts_pipeline, prepare_density_pipeline, prepare_forces_pipeline,
+    prepare_histogram_pipeline, prepare_integrate_pipeline, prepare_prefix_sum_naive_pipeline,
+    prepare_pressure_pipeline,
 };
 use glam::{IVec2, Vec2};
 
@@ -791,6 +792,14 @@ impl Plugin for GPUSPHPlugin {
                         .in_set(RenderSet::Prepare)
                         .after(init_counts_to_starts_bgl)
                         .after(init_starts_buffer_and_bg),
+                    init_block_scan_bgl.in_set(RenderSet::Prepare),
+                    init_block_sums_and_bg
+                        .in_set(RenderSet::Prepare)
+                        .after(init_block_scan_bgl)
+                        .after(init_starts_buffer_and_bg),
+                    prepare_block_scan_pipeline
+                        .in_set(RenderSet::Prepare)
+                        .after(init_block_scan_bgl),
                 ),
             );
 
@@ -798,5 +807,6 @@ impl Plugin for GPUSPHPlugin {
         add_clear_counts_node_to_graph(render_app);
         add_histogram_node_to_graph(render_app);
         add_prefix_sum_naive_node_to_graph(render_app);
+        add_block_scan_node_to_graph(render_app);
     }
 }
