@@ -16,9 +16,9 @@ use crate::gpu::buffers::{
     ParticleBindGroupLayout,
 };
 use crate::gpu::grid_build::{
-    GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer,
-    GridCountsToStartsBindGroup, GridCountsToStartsBindGroupLayout, GridHistogramBindGroup,
-    GridHistogramBindGroupLayout,
+    GridBlockScanBindGroup, GridBlockScanBindGroupLayout, GridBuildBindGroup,
+    GridBuildBindGroupLayout, GridBuildParamsBuffer, GridCountsToStartsBindGroup,
+    GridCountsToStartsBindGroupLayout, GridHistogramBindGroup, GridHistogramBindGroupLayout,
 };
 
 // ==================== resources ======================================
@@ -65,6 +65,15 @@ pub struct PrefixSumNaivePassLabel;
 
 #[derive(Default)]
 pub struct PrefixSumNaiveNode;
+
+#[derive(Resource)]
+pub struct BlockScanPipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct BlockScanPassLabel;
+
+#[derive(Default)]
+pub struct BlockScanNode;
 
 // =====================================================================
 
@@ -617,4 +626,101 @@ pub fn add_prefix_sum_naive_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let _ = graph.add_node_edge(ClearCountsLabel, PrefixSumNaivePassLabel);
     let _ = graph.add_node_edge(HistogramPassLabel, PrefixSumNaivePassLabel);
     let _ = graph.add_node_edge(PrefixSumNaivePassLabel, DensityPassLabel);
+}
+pub fn prepare_block_scan_pipeline(
+    mut commands: Commands,
+    pipeline_cache: Res<PipelineCache>,
+    layout: Option<Res<GridBlockScanBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_block_scan_pipeline".into()),
+        layout: vec![layout.0.clone()],
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: Cow::Borrowed("block_scan"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = pipeline_cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(BlockScanPipeline(id));
+}
+
+impl Node for BlockScanNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        if world.get_resource::<BlockScanPipeline>().is_none() {
+            info!("Info Node: block_scan SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBlockScanBindGroup>().is_none() {
+            info!("Info Node: block_scan SKIPPED (no bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBuildParamsBuffer>().is_none() {
+            info!("Info Node: block_scan SKIPPED (no params)");
+            return Ok(());
+        }
+
+        let pip_id = world.get_resource::<BlockScanPipeline>().unwrap().0;
+        let bg = &world.get_resource::<GridBlockScanBindGroup>().unwrap().0;
+        let gb = &world.get_resource::<GridBuildParamsBuffer>().unwrap().value;
+
+        if gb.num_cells == 0 {
+            info!("Info Node: block_scan SKIPPED (num_cells = 0)");
+            return Ok(());
+        }
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip_id) else {
+            info!("Info Node: block_scan SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        // one workgroup per block of 256 cells
+        let groups = ((gb.num_cells + 255) / 256).max(1);
+        info!(
+            "Info Node: block_scan DISPATCH, blocks = {}, cells = {}",
+            groups, gb.num_cells
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("BlockScanPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+        Ok(())
+    }
+}
+
+pub fn add_block_scan_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(BlockScanPassLabel, BlockScanNode::default());
+
+    // Order: ClearCounts -> Histogram -> BlockScan -> PrefixSumNaive (or Density later)
+    use crate::gpu::pipeline::{ClearCountsLabel, HistogramPassLabel, PrefixSumNaivePassLabel};
+    let _ = graph.add_node_edge(ClearCountsLabel, BlockScanPassLabel);
+    let _ = graph.add_node_edge(HistogramPassLabel, BlockScanPassLabel);
+    let _ = graph.add_node_edge(BlockScanPassLabel, PrefixSumNaivePassLabel);
 }
