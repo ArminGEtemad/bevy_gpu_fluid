@@ -16,7 +16,8 @@ use crate::gpu::buffers::{
     ParticleBindGroupLayout,
 };
 use crate::gpu::grid_build::{
-    GridBlockScanBindGroup, GridBlockScanBindGroupLayout, GridBuildBindGroup,
+    AddBackBindGroup, AddBackBindGroupLayout, BlockSumsScanBindGroup, BlockSumsScanBindGroupLayout,
+    GridBlockScanBindGroup, GridBlockScanBindGroupLayout, GridBlockSumsBuffer, GridBuildBindGroup,
     GridBuildBindGroupLayout, GridBuildParamsBuffer, GridCountsToStartsBindGroup,
     GridCountsToStartsBindGroupLayout, GridHistogramBindGroup, GridHistogramBindGroupLayout,
 };
@@ -74,7 +75,23 @@ pub struct BlockScanPassLabel;
 
 #[derive(Default)]
 pub struct BlockScanNode;
+#[derive(Resource)]
+pub struct BlockSumsScanPipeline(pub CachedComputePipelineId);
 
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct BlockSumsScanPassLabel;
+
+#[derive(Default)]
+pub struct BlockSumsScanNode;
+
+#[derive(Resource)]
+pub struct AddBackPipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct AddBackPassLabel;
+
+#[derive(Default)]
+pub struct AddBackNode;
 // =====================================================================
 
 // ========================== systems ==================================
@@ -453,7 +470,6 @@ pub fn add_clear_counts_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
     graph.add_node(ClearCountsLabel, ClearCountsNode::default());
 
-    use crate::gpu::pipeline::DensityPassLabel;
     let _ = graph.add_node_edge(ClearCountsLabel, DensityPassLabel);
 }
 
@@ -519,12 +535,12 @@ pub fn add_histogram_node_to_graph(render_app: &mut bevy::app::SubApp) {
     graph.add_node(HistogramPassLabel, HistogramNode::default());
 
     // Run order: ClearCounts -> Histogram -> Density
-    use crate::gpu::pipeline::{ClearCountsLabel, DensityPassLabel};
+
     let _ = graph.add_node_edge(ClearCountsLabel, HistogramPassLabel);
     let _ = graph.add_node_edge(HistogramPassLabel, DensityPassLabel);
 }
 
-pub fn prepare_prefix_sum_naive_pipeline(
+pub fn _prepare_prefix_sum_naive_pipeline(
     mut commands: Commands,
     pipeline_cache: Res<PipelineCache>,
     layout: Option<Res<GridCountsToStartsBindGroupLayout>>,
@@ -617,12 +633,12 @@ impl Node for PrefixSumNaiveNode {
         Ok(())
     }
 }
-pub fn add_prefix_sum_naive_node_to_graph(render_app: &mut bevy::app::SubApp) {
+pub fn _add_prefix_sum_naive_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
     graph.add_node(PrefixSumNaivePassLabel, PrefixSumNaiveNode::default());
 
     // Order: ClearCounts -> Histogram -> PrefixSumNaive -> Density
-    use crate::gpu::pipeline::{ClearCountsLabel, DensityPassLabel, HistogramPassLabel};
+
     let _ = graph.add_node_edge(ClearCountsLabel, PrefixSumNaivePassLabel);
     let _ = graph.add_node_edge(HistogramPassLabel, PrefixSumNaivePassLabel);
     let _ = graph.add_node_edge(PrefixSumNaivePassLabel, DensityPassLabel);
@@ -719,8 +735,202 @@ pub fn add_block_scan_node_to_graph(render_app: &mut bevy::app::SubApp) {
     graph.add_node(BlockScanPassLabel, BlockScanNode::default());
 
     // Order: ClearCounts -> Histogram -> BlockScan -> PrefixSumNaive (or Density later)
-    use crate::gpu::pipeline::{ClearCountsLabel, HistogramPassLabel, PrefixSumNaivePassLabel};
+
     let _ = graph.add_node_edge(ClearCountsLabel, BlockScanPassLabel);
     let _ = graph.add_node_edge(HistogramPassLabel, BlockScanPassLabel);
-    let _ = graph.add_node_edge(BlockScanPassLabel, PrefixSumNaivePassLabel);
+    //let _ = graph.add_node_edge(BlockScanPassLabel, PrefixSumNaivePassLabel);
+}
+
+pub fn prepare_block_sums_scan_pipeline(
+    mut commands: Commands,
+    cache: Res<PipelineCache>,
+    layout: Option<Res<BlockSumsScanBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_block_sums_scan_pipeline".into()),
+        layout: vec![layout.0.clone()],
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: Cow::Borrowed("block_sums_scan"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(BlockSumsScanPipeline(id));
+}
+
+impl Node for BlockSumsScanNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        if world.get_resource::<BlockSumsScanPipeline>().is_none() {
+            info!("Info Node: block_sums_scan SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world.get_resource::<BlockSumsScanBindGroup>().is_none() {
+            info!("Info Node: block_sums_scan SKIPPED (no bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBlockSumsBuffer>().is_none() {
+            info!("Info Node: block_sums_scan SKIPPED (no block sums)");
+            return Ok(());
+        }
+
+        let pip_id = world.get_resource::<BlockSumsScanPipeline>().unwrap().0;
+        let bg = &world.get_resource::<BlockSumsScanBindGroup>().unwrap().0;
+        let bs = world.get_resource::<GridBlockSumsBuffer>().unwrap();
+
+        // derive workgroups from number of blocks
+        let blocks = bs.num_blocks.max(1);
+        let groups = ((blocks + 255) / 256).max(1);
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip_id) else {
+            info!("Info Node: block_sums_scan SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        info!(
+            "Info Node: block_sums_scan DISPATCH, blocks = {}, groups = {}",
+            blocks, groups
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("BlockSumsScanPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+        Ok(())
+    }
+}
+
+pub fn add_block_sums_scan_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(BlockSumsScanPassLabel, BlockSumsScanNode::default());
+
+    // Order: ClearCounts -> Histogram -> BlockScan -> BlockSumsScan -> Density
+    let _ = graph.add_node_edge(ClearCountsLabel, BlockSumsScanPassLabel);
+    let _ = graph.add_node_edge(HistogramPassLabel, BlockSumsScanPassLabel);
+    let _ = graph.add_node_edge(BlockScanPassLabel, BlockSumsScanPassLabel);
+    let _ = graph.add_node_edge(BlockSumsScanPassLabel, DensityPassLabel);
+}
+
+pub fn prepare_add_back_pipeline(
+    mut commands: Commands,
+    cache: Res<PipelineCache>,
+    layout: Option<Res<AddBackBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_add_back_pipeline".into()),
+        layout: vec![layout.0.clone()],
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: Cow::Borrowed("add_back_block_offsets"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(AddBackPipeline(id));
+}
+
+impl Node for AddBackNode {
+    fn update(&mut self, _world: &mut World) {}
+
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        if world.get_resource::<AddBackPipeline>().is_none() {
+            info!("Info Node: add_back SKIPPED (pipeline not ready)");
+            return Ok(());
+        }
+        if world.get_resource::<AddBackBindGroup>().is_none() {
+            info!("Info Node: add_back SKIPPED (no bind group)");
+            return Ok(());
+        }
+        if world.get_resource::<GridBuildParamsBuffer>().is_none() {
+            info!("Info Node: add_back SKIPPED (no params)");
+            return Ok(());
+        }
+
+        let pip_id = world.get_resource::<AddBackPipeline>().unwrap().0;
+        let bg = &world.get_resource::<AddBackBindGroup>().unwrap().0;
+        let gb = &world.get_resource::<GridBuildParamsBuffer>().unwrap().value;
+
+        if gb.num_cells == 0 {
+            info!("Info Node: add_back SKIPPED (num_cells = 0)");
+            return Ok(());
+        }
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip_id) else {
+            info!("Info Node: add_back SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        let groups = ((gb.num_cells + 255) / 256).max(1);
+        info!(
+            "Info Node: add_back DISPATCH, cells = {}, groups = {}",
+            gb.num_cells, groups
+        );
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("AddBackPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+
+        Ok(())
+    }
+}
+
+pub fn add_add_back_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(AddBackPassLabel, AddBackNode::default());
+
+    // Order: ClearCounts -> Histogram -> BlockScan -> BlockSumsScan -> AddBack -> Density
+    let _ = graph.add_node_edge(ClearCountsLabel, AddBackPassLabel);
+    let _ = graph.add_node_edge(HistogramPassLabel, AddBackPassLabel);
+    let _ = graph.add_node_edge(BlockScanPassLabel, AddBackPassLabel);
+    let _ = graph.add_node_edge(BlockSumsScanPassLabel, AddBackPassLabel);
+    let _ = graph.add_node_edge(AddBackPassLabel, DensityPassLabel);
 }

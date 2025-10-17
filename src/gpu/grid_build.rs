@@ -58,6 +58,17 @@ pub struct GridBlockScanBindGroupLayout(pub BindGroupLayout);
 
 #[derive(Resource)]
 pub struct GridBlockScanBindGroup(pub BindGroup);
+#[derive(Resource, Clone)]
+pub struct BlockSumsScanBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource, Clone)]
+pub struct AddBackBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource)]
+pub struct AddBackBindGroup(pub BindGroup);
+
+#[derive(Resource)]
+pub struct BlockSumsScanBindGroup(pub BindGroup);
 
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
@@ -420,4 +431,98 @@ pub fn init_block_sums_and_bg(
 
     commands.insert_resource(block_sums_res);
     commands.insert_resource(GridBlockScanBindGroup(bg));
+}
+
+pub fn init_block_sums_scan_bgl(mut commands: Commands, rd: Res<RenderDevice>) {
+    let layout = rd.create_bind_group_layout(
+        Some("grid_block_sums_scan_bgl"),
+        &[BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    );
+    commands.insert_resource(BlockSumsScanBindGroupLayout(layout));
+}
+
+pub fn init_block_sums_scan_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    layout: Option<Res<BlockSumsScanBindGroupLayout>>,
+    bs: Option<Res<GridBlockSumsBuffer>>,
+) {
+    let (Some(layout), Some(bs)) = (layout, bs) else {
+        return;
+    };
+    let bg = rd.create_bind_group(
+        Some("grid_block_sums_scan_bg"),
+        &layout.0,
+        &[BindGroupEntry {
+            binding: 0,
+            resource: bs.buffer.as_entire_binding(),
+        }],
+    );
+    commands.insert_resource(BlockSumsScanBindGroup(bg));
+}
+
+pub fn init_add_back_bgl(mut commands: Commands, rd: Res<RenderDevice>) {
+    let layout = rd.create_bind_group_layout(
+        Some("grid_add_back_bgl"),
+        &[
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+    commands.insert_resource(AddBackBindGroupLayout(layout));
+}
+
+pub fn init_add_back_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    layout: Option<Res<AddBackBindGroupLayout>>,
+    starts: Option<Res<GridStartsBuffer>>,
+    blocks: Option<Res<GridBlockSumsBuffer>>,
+) {
+    let (Some(layout), Some(starts), Some(blocks)) = (layout, starts, blocks) else {
+        return;
+    };
+
+    let bg = rd.create_bind_group(
+        Some("grid_add_back_bg"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 1,
+                resource: starts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: blocks.buffer.as_entire_binding(),
+            },
+        ],
+    );
+    commands.insert_resource(AddBackBindGroup(bg));
 }

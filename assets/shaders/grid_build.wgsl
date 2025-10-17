@@ -151,3 +151,32 @@ fn block_scan(
         block_sums.data[wid.x] = sum;
     }
 }
+
+@group(0) @binding(0) var<storage, read_write> block_rw : BlockSumsBuf;
+
+@compute @workgroup_size(256)
+fn block_sums_scan(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&block_rw.data);
+    if i >= n { return; }
+
+    var sum: u32 = 0u;
+    var j: u32 = 0u;
+    loop {
+        if j >= i { break; }
+        sum = sum + block_rw.data[j];
+        j = j + 1u;
+    }
+    block_rw.data[i] = sum;
+}
+
+@compute @workgroup_size(256)
+fn add_back_block_offsets(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&starts_rw.data);
+    if i >= n { return; }
+
+    let block = i / 256u;
+    let offs = block_sums.data[block];
+    starts_rw.data[i] = starts_rw.data[i] + offs;
+}
