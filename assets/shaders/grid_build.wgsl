@@ -30,6 +30,9 @@ struct BlockSumsBuf {
     data: array<u32>,
 };
 
+const WG_SIZE: u32 = 256u; 
+const MAX_GROUPS_X: u32 = 65535u;
+
 // ---------- Module-scope shared memory for block_scan ----------
 var<workgroup> wg_s: array<u32, 256u>;
 
@@ -38,8 +41,13 @@ var<workgroup> wg_s: array<u32, 256u>;
 @group(0) @binding(1) var<uniform> gb: GridBuildParams;
 
 @compute @workgroup_size(256)
-fn clear_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn clear_counts(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+) {
+    // flatten 2D groups -> 1D index
+    let i = gid.x + WG_SIZE * MAX_GROUPS_X * wid.y;
+
     if i < gb.num_cells {
         atomicStore(&counts_rw.data[i], 0u);
     }
@@ -91,14 +99,19 @@ fn prefix_sum_naive(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Per-block (256) exclusive scan + block totals
 @compute @workgroup_size(256)
 fn block_scan(
-    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(local_invocation_id)  lid: vec3<u32>,
     @builtin(global_invocation_id) gid: vec3<u32>,
-    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(workgroup_id)         wid: vec3<u32>,
 ) {
-    let i = gid.x;
-    let li = lid.x; // 0..255
+    // linear workgroup id in blocks of 256
+    let wid_linear = wid.x + MAX_GROUPS_X * wid.y;
+
+    // global element index
+    let i = gid.x + WG_SIZE * MAX_GROUPS_X * wid.y;
+
+    let li = lid.x;
     let n = arrayLength(&counts_ro.data);
-    let base = wid.x * 256u;
+    let base = wid_linear * WG_SIZE;
 
     // load to shared mem (0 if OOB)
     var v: u32 = 0u;
@@ -137,18 +150,12 @@ fn block_scan(
 
     // last thread writes this block's total
     if li == 255u {
-        // how many elements this block really covers
         let remain = select(0u, n - base, n > base);
-
         var last: u32 = 255u;
-        if remain == 0u {
-            last = 0u;
-        } else if remain < 256u {
-            last = remain - 1u;
-        }
+        if remain == 0u { last = 0u; } else if remain < 256u { last = remain - 1u; }
 
         let sum = wg_s[last];
-        block_sums.data[wid.x] = sum;
+        block_sums.data[wid_linear] = sum;   // <-- use wid_linear, not wid.x
     }
 }
 
@@ -171,12 +178,39 @@ fn block_sums_scan(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 @compute @workgroup_size(256)
-fn add_back_block_offsets(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn add_back_block_offsets(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id)         wid: vec3<u32>,
+) {
+    let i = gid.x + WG_SIZE * MAX_GROUPS_X * wid.y;
+
     let n = arrayLength(&starts_rw.data);
     if i >= n { return; }
 
-    let block = i / 256u;
+    let block = i / WG_SIZE;
     let offs = block_sums.data[block];
     starts_rw.data[i] = starts_rw.data[i] + offs;
+}
+@group(0) @binding(3) var<storage, read_write> entries : U32Buf; 
+@group(0) @binding(4) var<storage, read_write> cursor : U32AtomicBuf;  
+
+@compute @workgroup_size(256)
+fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&particles.data);
+    if i >= n { return; }
+
+    let c = cell_index(particles.data[i].pos);
+    let loc = atomicAdd(&cursor.data[c], 1u);
+    let dst = starts_rw.data[c] + loc;
+    entries.data[dst] = i;
+}
+@compute @workgroup_size(1)
+fn write_sentinel(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x != 0u { return; }
+    let nstarts = arrayLength(&starts_rw.data);
+    if nstarts == 0u { return; }
+    let last = nstarts - 1u;
+    let total = arrayLength(&particles.data);   // ← number of particles
+    starts_rw.data[last] = total;
 }

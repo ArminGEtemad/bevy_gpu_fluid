@@ -70,6 +70,26 @@ pub struct AddBackBindGroup(pub BindGroup);
 #[derive(Resource)]
 pub struct BlockSumsScanBindGroup(pub BindGroup);
 
+#[derive(Resource)]
+pub struct GridCursorBuffer {
+    pub buffer: Buffer,
+    pub num_cells: u32,
+}
+
+#[derive(Resource)]
+pub struct GridOverflowCounter {
+    pub buffer: Buffer, // a debug struct
+}
+
+#[derive(Resource, Clone)]
+pub struct GridScatterBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource)]
+pub struct GridScatterBindGroup(pub BindGroup);
+
+#[derive(Resource)]
+pub struct ClearCursorBindGroup(pub bevy::render::render_resource::BindGroup);
+
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
@@ -525,4 +545,191 @@ pub fn init_add_back_bg(
         ],
     );
     commands.insert_resource(AddBackBindGroup(bg));
+}
+
+pub fn init_scatter_bgl(mut commands: Commands, rd: Res<RenderDevice>) {
+    let layout = rd.create_bind_group_layout(
+        Some("grid_scatter_bgl"),
+        &[
+            // 0: particles
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 1: starts
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 2: GridParams
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 3: entries
+            BindGroupLayoutEntry {
+                binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 4: cursor
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+    commands.insert_resource(GridScatterBindGroupLayout(layout));
+}
+
+pub fn init_scatter_resources_and_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    layout: Option<Res<GridScatterBindGroupLayout>>,
+    grid: Option<Res<ExtractedGrid>>,
+    particles: Option<Res<ExtractedParticleBuffer>>,
+    starts: Option<Res<GridStartsBuffer>>,
+    entries_grid: Option<Res<ExtractedGrid>>,
+    existing_cursor: Option<Res<GridCursorBuffer>>,
+    existing_overflow: Option<Res<GridOverflowCounter>>,
+) {
+    let (Some(layout), Some(grid_res), Some(particles), Some(starts), Some(entries_grid)) =
+        (layout, grid, particles, starts, entries_grid)
+    else {
+        return;
+    };
+
+    let num_cells = grid_res.num_cells as u32;
+    if num_cells == 0 {
+        return;
+    }
+
+    let mut new_cursor_buf: Option<Buffer> = None;
+    let need_cursor = existing_cursor
+        .as_ref()
+        .map(|c| c.num_cells != num_cells)
+        .unwrap_or(true);
+
+    if need_cursor {
+        let size_bytes = ((grid_res.num_cells + 1).max(1) * std::mem::size_of::<u32>()) as u64;
+        let buf = rd.create_buffer(&BufferDescriptor {
+            label: Some("grid_cursor"),
+            size: size_bytes,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        new_cursor_buf = Some(buf);
+    }
+    let cursor_buf_ref: &Buffer = if let Some(ref buf) = new_cursor_buf {
+        buf
+    } else {
+        &existing_cursor.as_ref().unwrap().buffer
+    };
+
+    // overflow counter (not used yet in BG)
+    if existing_overflow.is_none() {
+        let overflow_buf = rd.create_buffer(&BufferDescriptor {
+            label: Some("grid_overflow_counter"),
+            size: 4,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        commands.insert_resource(GridOverflowCounter {
+            buffer: overflow_buf,
+        });
+    }
+
+    let bg = rd.create_bind_group(
+        Some("grid_scatter_bg"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: particles.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: starts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: grid_res.params_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: entries_grid.entries_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: cursor_buf_ref.as_entire_binding(),
+            },
+        ],
+    );
+    commands.insert_resource(GridScatterBindGroup(bg));
+
+    if let Some(buf) = new_cursor_buf {
+        commands.insert_resource(GridCursorBuffer {
+            buffer: buf,
+            num_cells,
+        });
+    }
+}
+
+pub fn init_clear_cursor_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    layout: Option<Res<GridBuildBindGroupLayout>>,
+    cursor: Option<Res<GridCursorBuffer>>,
+    gb: Option<Res<GridBuildParamsBuffer>>,
+) {
+    let (Some(layout), Some(cursor), Some(gb)) = (layout, cursor, gb) else {
+        return;
+    };
+
+    let bg = rd.create_bind_group(
+        Some("grid_clear_cursor_bg"),
+        &layout.0,
+        &[
+            // binding(0) -> cursor buffer (rw storage)
+            BindGroupEntry {
+                binding: 0,
+                resource: cursor.buffer.as_entire_binding(),
+            },
+            // binding(1) -> GridBuildParams uniform
+            BindGroupEntry {
+                binding: 1,
+                resource: gb.buffer.as_entire_binding(),
+            },
+        ],
+    );
+    commands.insert_resource(ClearCursorBindGroup(bg));
 }
