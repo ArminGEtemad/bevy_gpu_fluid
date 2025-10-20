@@ -17,9 +17,10 @@ use crate::gpu::buffers::{
 };
 use crate::gpu::grid_build::{
     AddBackBindGroup, AddBackBindGroupLayout, BlockSumsScanBindGroup, BlockSumsScanBindGroupLayout,
-    GridBlockScanBindGroup, GridBlockScanBindGroupLayout, GridBlockSumsBuffer, GridBuildBindGroup,
-    GridBuildBindGroupLayout, GridBuildParamsBuffer, GridCountsToStartsBindGroup,
-    GridCountsToStartsBindGroupLayout, GridHistogramBindGroup, GridHistogramBindGroupLayout,
+    CursorClearBindGroup, GridBlockScanBindGroup, GridBlockScanBindGroupLayout,
+    GridBlockSumsBuffer, GridBuildBindGroup, GridBuildBindGroupLayout, GridBuildParamsBuffer,
+    GridCountsToStartsBindGroup, GridCountsToStartsBindGroupLayout, GridHistogramBindGroup,
+    GridHistogramBindGroupLayout, ScatterBindGroup, ScatterBindGroupLayout,
 };
 
 // ==================== resources ======================================
@@ -92,6 +93,27 @@ pub struct AddBackPassLabel;
 
 #[derive(Default)]
 pub struct AddBackNode;
+
+#[derive(Resource)]
+pub struct WriteSentinelPipeline(pub CachedComputePipelineId);
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct WriteSentinelPassLabel;
+
+#[derive(Default)]
+pub struct WriteSentinelNode;
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct ClearCursorPassLabel;
+#[derive(Default)]
+pub struct ClearCursorNode;
+
+#[derive(Resource)]
+pub struct ScatterPipeline(pub CachedComputePipelineId);
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct ScatterPassLabel;
+#[derive(Default)]
+pub struct ScatterNode;
 // =====================================================================
 
 // ========================== systems ==================================
@@ -933,4 +955,215 @@ pub fn add_add_back_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let _ = graph.add_node_edge(BlockScanPassLabel, AddBackPassLabel);
     let _ = graph.add_node_edge(BlockSumsScanPassLabel, AddBackPassLabel);
     let _ = graph.add_node_edge(AddBackPassLabel, DensityPassLabel);
+}
+
+pub fn prepare_write_sentinel_pipeline(
+    mut commands: Commands,
+    cache: Res<PipelineCache>,
+    layout: Option<Res<GridCountsToStartsBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_write_sentinel_pipeline".into()),
+        layout: vec![layout.0.clone()], // counts(ro), starts(rw)
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: std::borrow::Cow::Borrowed("write_sentinel"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(WriteSentinelPipeline(id));
+}
+impl Node for WriteSentinelNode {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        let Some(pip_res) = world.get_resource::<WriteSentinelPipeline>() else {
+            info!("Info Node: write_sentinel SKIPPED (pipeline not ready)");
+            return Ok(());
+        };
+        let Some(bg) = world.get_resource::<GridCountsToStartsBindGroup>() else {
+            info!("Info Node: write_sentinel SKIPPED (no bind group)");
+            return Ok(());
+        };
+        let Some(gb) = world.get_resource::<GridBuildParamsBuffer>() else {
+            info!("Info Node: write_sentinel SKIPPED (no params)");
+            return Ok(());
+        };
+        if gb.value.num_cells == 0 {
+            info!("Info Node: write_sentinel SKIPPED (num_cells = 0)");
+            return Ok(());
+        }
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip_res.0) else {
+            info!("Info Node: write_sentinel SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        // Single workgroup is enough
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("WriteSentinelPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bg.0, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+
+        Ok(())
+    }
+}
+pub fn add_write_sentinel_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(WriteSentinelPassLabel, WriteSentinelNode::default());
+
+    let _ = graph.add_node_edge(AddBackPassLabel, WriteSentinelPassLabel);
+    let _ = graph.add_node_edge(WriteSentinelPassLabel, DensityPassLabel);
+}
+
+impl Node for ClearCursorNode {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        let Some(pip) = world.get_resource::<ClearCountsPipeline>() else {
+            info!("Info Node: clear_cursor SKIPPED (pipeline not ready)");
+            return Ok(());
+        };
+        let Some(bg) = world.get_resource::<CursorClearBindGroup>() else {
+            info!("Info Node: clear_cursor SKIPPED (no bind group)");
+            return Ok(());
+        };
+        let Some(gb) = world.get_resource::<GridBuildParamsBuffer>() else {
+            info!("Info Node: clear_cursor SKIPPED (no params)");
+            return Ok(());
+        };
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip.0) else {
+            info!("Info Node: clear_cursor SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        let groups = ((gb.value.num_cells + 255) / 256).max(1);
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("ClearCursorPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bg.0, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+        Ok(())
+    }
+}
+pub fn add_clear_cursor_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(ClearCursorPassLabel, ClearCursorNode::default());
+    // after AddBack & WriteSentinel, before Scatter
+    let _ = graph.add_node_edge(AddBackPassLabel, ClearCursorPassLabel);
+    let _ = graph.add_node_edge(WriteSentinelPassLabel, ClearCursorPassLabel);
+}
+
+pub fn prepare_scatter_pipeline(
+    mut commands: Commands,
+    cache: Res<PipelineCache>,
+    layout: Option<Res<ScatterBindGroupLayout>>,
+    assets: Res<AssetServer>,
+    mut cached: Local<Option<CachedComputePipelineId>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if cached.is_some() {
+        return;
+    }
+
+    let shader: Handle<Shader> = assets.load("shaders/grid_build.wgsl");
+    let desc = ComputePipelineDescriptor {
+        label: Some("grid_scatter_pipeline".into()),
+        layout: vec![layout.0.clone()],
+        push_constant_ranges: vec![],
+        shader_defs: vec![],
+        entry_point: Cow::Borrowed("scatter"),
+        shader,
+        zero_initialize_workgroup_memory: true,
+    };
+    let id = cache.queue_compute_pipeline(desc);
+    *cached = Some(id);
+    commands.insert_resource(ScatterPipeline(id));
+}
+
+impl Node for ScatterNode {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        let Some(pip) = world.get_resource::<ScatterPipeline>() else {
+            info!("Info Node: scatter SKIPPED (pipeline not ready)");
+            return Ok(());
+        };
+        let Some(bg) = world.get_resource::<ScatterBindGroup>() else {
+            info!("Info Node: scatter SKIPPED (no bind group)");
+            return Ok(());
+        };
+        let Some(extracted) = world.get_resource::<ExtractedParticleBuffer>() else {
+            info!("Info Node: scatter SKIPPED (no particles)");
+            return Ok(());
+        };
+
+        let cache = world.resource::<PipelineCache>();
+        let Some(pipeline) = cache.get_compute_pipeline(pip.0) else {
+            info!("Info Node: scatter SKIPPED (pipeline compiling)");
+            return Ok(());
+        };
+
+        let n = extracted.num_particles.max(1);
+        let groups = (n + 255) / 256;
+        info!("Info Node: scatter DISPATCH, N = {n}, groups = {groups}");
+
+        let mut pass =
+            render_context
+                .command_encoder()
+                .begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("ScatterPass"),
+                    timestamp_writes: None,
+                });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bg.0, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+        Ok(())
+    }
+}
+pub fn add_scatter_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+    graph.add_node(ScatterPassLabel, ScatterNode::default());
+    // Order: ... AddBack -> WriteSentinel -> ClearCursor -> Scatter -> Density
+    let _ = graph.add_node_edge(AddBackPassLabel, ScatterPassLabel);
+    let _ = graph.add_node_edge(WriteSentinelPassLabel, ScatterPassLabel);
+    let _ = graph.add_node_edge(ClearCursorPassLabel, ScatterPassLabel);
+    let _ = graph.add_node_edge(ScatterPassLabel, DensityPassLabel);
 }

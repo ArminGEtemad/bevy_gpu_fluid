@@ -16,16 +16,19 @@ use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{
     init_add_back_bg, init_add_back_bgl, init_block_scan_bgl, init_block_sums_and_bg,
     init_block_sums_scan_bg, init_block_sums_scan_bgl, init_counts_to_starts_bgl,
-    init_grid_build_bind_group_layout, init_grid_build_buffers, init_grid_histogram_bind_group,
-    init_grid_histogram_bind_group_layout, init_starts_buffer_and_bg,
+    init_cursor_buffer_and_clear_bg, init_gpu_entries_buffer, init_grid_build_bind_group_layout,
+    init_grid_build_buffers, init_grid_histogram_bind_group, init_grid_histogram_bind_group_layout,
+    init_scatter_bg, init_scatter_bgl, init_starts_buffer_and_bg,
 };
 use crate::gpu::pipeline::{
     _add_prefix_sum_naive_node_to_graph, _prepare_prefix_sum_naive_pipeline,
     add_add_back_node_to_graph, add_block_scan_node_to_graph, add_block_sums_scan_node_to_graph,
-    add_clear_counts_node_to_graph, add_density_node_to_graph, add_histogram_node_to_graph,
+    add_clear_counts_node_to_graph, add_clear_cursor_node_to_graph, add_density_node_to_graph,
+    add_histogram_node_to_graph, add_scatter_node_to_graph, add_write_sentinel_node_to_graph,
     prepare_add_back_pipeline, prepare_block_scan_pipeline, prepare_block_sums_scan_pipeline,
     prepare_clear_counts_pipeline, prepare_density_pipeline, prepare_forces_pipeline,
     prepare_histogram_pipeline, prepare_integrate_pipeline, prepare_pressure_pipeline,
+    prepare_scatter_pipeline, prepare_write_sentinel_pipeline,
 };
 use glam::{IVec2, Vec2};
 
@@ -816,6 +819,23 @@ impl Plugin for GPUSPHPlugin {
                     .after(init_block_sums_and_bg)
                     .after(init_starts_buffer_and_bg),
                 prepare_add_back_pipeline.after(init_add_back_bgl),
+                prepare_write_sentinel_pipeline.after(prepare_add_back_pipeline),
+            )
+                .in_set(RenderSet::Prepare),
+        );
+        render_app.add_systems(
+            Render,
+            (
+                // After previous grid prep blocks…
+                init_cursor_buffer_and_clear_bg.after(prepare_add_back_pipeline), // needs params/layout ready
+                init_gpu_entries_buffer.after(init_grid_build_buffers), // needs particle count
+                init_scatter_bgl,
+                init_scatter_bg
+                    .after(init_scatter_bgl)
+                    .after(init_cursor_buffer_and_clear_bg)
+                    .after(init_starts_buffer_and_bg)
+                    .after(init_gpu_entries_buffer),
+                prepare_scatter_pipeline.after(init_scatter_bgl),
             )
                 .in_set(RenderSet::Prepare),
         );
@@ -827,5 +847,8 @@ impl Plugin for GPUSPHPlugin {
         add_block_scan_node_to_graph(render_app);
         add_block_sums_scan_node_to_graph(render_app);
         add_add_back_node_to_graph(render_app);
+        add_write_sentinel_node_to_graph(render_app);
+        add_clear_cursor_node_to_graph(render_app);
+        add_scatter_node_to_graph(render_app);
     }
 }

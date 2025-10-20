@@ -70,6 +70,27 @@ pub struct AddBackBindGroup(pub BindGroup);
 #[derive(Resource)]
 pub struct BlockSumsScanBindGroup(pub BindGroup);
 
+#[derive(Resource)]
+pub struct GridCursorBuffer {
+    pub buffer: Buffer,
+    pub num_cells: u32,
+}
+
+#[derive(Resource, Clone)]
+pub struct ScatterBindGroupLayout(pub BindGroupLayout);
+
+#[derive(Resource)]
+pub struct ScatterBindGroup(pub BindGroup);
+
+#[derive(Resource)]
+pub struct GridEntriesGpuBuffer {
+    pub buffer: Buffer,
+    pub len: u32,
+}
+
+#[derive(Resource)]
+pub struct CursorClearBindGroup(pub BindGroup);
+
 /// Create the layout in the Render world (runs once)
 pub fn init_grid_build_bind_group_layout(mut commands: Commands, render_device: Res<RenderDevice>) {
     let layout = render_device.create_bind_group_layout(
@@ -298,7 +319,7 @@ pub fn init_starts_buffer_and_bg(
         }
     }
 
-    let size_bytes = (grid.num_cells.max(1) * std::mem::size_of::<u32>()) as u64;
+    let size_bytes = ((grid.num_cells + 1).max(1) * std::mem::size_of::<u32>()) as u64;
     let starts_buf = render_device.create_buffer(&BufferDescriptor {
         label: Some("grid_starts"),
         size: size_bytes,
@@ -525,4 +546,193 @@ pub fn init_add_back_bg(
         ],
     );
     commands.insert_resource(AddBackBindGroup(bg));
+}
+
+pub fn init_cursor_buffer_and_clear_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    gb_layout: Option<Res<GridBuildBindGroupLayout>>,
+    grid: Option<Res<crate::gpu::buffers::ExtractedGrid>>,
+    params: Option<Res<GridBuildParamsBuffer>>,
+) {
+    let (Some(gb_layout), Some(grid), Some(params)) = (gb_layout, grid, params) else {
+        return;
+    };
+    let num_cells = params.value.num_cells;
+    if num_cells == 0 {
+        return;
+    }
+
+    let size_bytes = (num_cells.max(1) as usize * std::mem::size_of::<u32>()) as u64;
+    let cursor = rd.create_buffer(&BufferDescriptor {
+        label: Some("grid_cursor"),
+        size: size_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let clear_bg = rd.create_bind_group(
+        Some("grid_cursor_clear_bg"),
+        &gb_layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: cursor.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: params.buffer.as_entire_binding(),
+            },
+        ],
+    );
+
+    commands.insert_resource(GridCursorBuffer {
+        buffer: cursor,
+        num_cells,
+    });
+    commands.insert_resource(CursorClearBindGroup(clear_bg));
+}
+
+pub fn init_gpu_entries_buffer(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    extracted_particles: Option<Res<crate::gpu::buffers::ExtractedParticleBuffer>>,
+    existing: Option<Res<GridEntriesGpuBuffer>>,
+) {
+    let Some(p) = extracted_particles else {
+        return;
+    };
+    let len = p.num_particles;
+    if len == 0 {
+        return;
+    }
+
+    if let Some(ex) = &existing {
+        if ex.len == len {
+            return;
+        } // keep
+    }
+
+    let size_bytes = (len.max(1) as usize * std::mem::size_of::<u32>()) as u64;
+    let entries = rd.create_buffer(&BufferDescriptor {
+        label: Some("grid_entries_gpu"),
+        size: size_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    commands.insert_resource(GridEntriesGpuBuffer {
+        buffer: entries,
+        len,
+    });
+}
+
+pub fn init_scatter_bgl(mut commands: Commands, rd: Res<RenderDevice>) {
+    // 0: particles (read), 1: starts (read), 2: cursor (rw), 3: entries (rw), 4: grid params (uniform)
+    let layout = rd.create_bind_group_layout(
+        Some("grid_scatter_bgl"),
+        &[
+            BindGroupLayoutEntry {
+                // particles
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                // starts
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                // cursor
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                // entries
+                binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                // grid params
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    );
+    commands.insert_resource(ScatterBindGroupLayout(layout));
+}
+
+pub fn init_scatter_bg(
+    mut commands: Commands,
+    rd: Res<RenderDevice>,
+    layout: Option<Res<ScatterBindGroupLayout>>,
+    particles: Option<Res<crate::gpu::buffers::ExtractedParticleBuffer>>,
+    starts: Option<Res<GridStartsBuffer>>,
+    cursor: Option<Res<GridCursorBuffer>>,
+    entries: Option<Res<GridEntriesGpuBuffer>>,
+    grid: Option<Res<crate::gpu::buffers::ExtractedGrid>>,
+) {
+    let (Some(layout), Some(particles), Some(starts), Some(cursor), Some(entries), Some(grid)) =
+        (layout, particles, starts, cursor, entries, grid)
+    else {
+        return;
+    };
+
+    let bg = rd.create_bind_group(
+        Some("grid_scatter_bg"),
+        &layout.0,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: particles.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: starts.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: cursor.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: entries.buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: grid.params_buf.as_entire_binding(),
+            },
+        ],
+    );
+    commands.insert_resource(ScatterBindGroup(bg));
 }
