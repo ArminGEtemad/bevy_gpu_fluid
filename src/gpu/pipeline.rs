@@ -114,6 +114,7 @@ pub struct ScatterPipeline(pub CachedComputePipelineId);
 pub struct ScatterPassLabel;
 #[derive(Default)]
 pub struct ScatterNode;
+
 // =====================================================================
 
 // ========================== systems ==================================

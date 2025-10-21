@@ -555,7 +555,7 @@ pub fn init_cursor_buffer_and_clear_bg(
     grid: Option<Res<crate::gpu::buffers::ExtractedGrid>>,
     params: Option<Res<GridBuildParamsBuffer>>,
 ) {
-    let (Some(gb_layout), Some(grid), Some(params)) = (gb_layout, grid, params) else {
+    let (Some(gb_layout), Some(_grid), Some(params)) = (gb_layout, grid, params) else {
         return;
     };
     let num_cells = params.value.num_cells;

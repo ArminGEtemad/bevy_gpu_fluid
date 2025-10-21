@@ -13,10 +13,14 @@ struct GridBuildParams {
 
 struct Particle {
     pos: vec2<f32>,
+    vel: vec2<f32>,
+    acc: vec2<f32>,
+    rho: f32,
+    p: f32,
 };
 struct ParticleBuf {
-    data: array<Particle>,
-};
+    data: array<Particle>, // runtime-sized array must be last
+}
 
 struct GridParams {
     min_world: vec2<f32>,
@@ -51,10 +55,14 @@ fn clear_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(2) var<uniform> grid: GridParams;
 
 fn cell_index(p: vec2<f32>) -> u32 {
-    let rel = (p - grid.min_world) / grid.cell_size;
-    let cx = clamp(i32(floor(rel.x)), 0, i32(grid.dims.x) - 1);
-    let cy = clamp(i32(floor(rel.y)), 0, i32(grid.dims.y) - 1);
-    return u32(cy) * grid.dims.x + u32(cx);
+    let h = grid.cell_size;
+    // CPU-compatible: floor(pos / h) - round(min_world / h)
+    let c = vec2<i32>(floor(p / h));
+    let origin = vec2<i32>(round(grid.min_world / h));
+
+    let ix = clamp(c.x - origin.x, 0, i32(grid.dims.x) - 1);
+    let iy = clamp(c.y - origin.y, 0, i32(grid.dims.y) - 1);
+    return u32(iy) * grid.dims.x + u32(ix);
 }
 
 @compute @workgroup_size(256)
@@ -197,17 +205,20 @@ fn write_sentinel(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // =================== Scatter (group 0) ===================
 // Particles → Entries using Starts + per-cell Cursor
-@group(0) @binding(0) var<storage, read>  particles_scatter : ParticleBuf;
-@group(0) @binding(1) var<storage, read>  starts_scatter    : U32Buf;
-@group(0) @binding(2) var<storage, read_write> cursor_rw    : U32AtomicBuf;
-@group(0) @binding(3) var<storage, read_write> entries_rw   : U32Buf;
-@group(0) @binding(4) var<uniform>         grid_scatter     : GridParams;
+@group(0) @binding(0) var<storage, read> particles_scatter : ParticleBuf;
+@group(0) @binding(1) var<storage, read> starts_scatter : U32Buf;
+@group(0) @binding(2) var<storage, read_write> cursor_rw : U32AtomicBuf;
+@group(0) @binding(3) var<storage, read_write> entries_rw : U32Buf;
+@group(0) @binding(4) var<uniform> grid_scatter : GridParams;
 
 fn cell_index_scatter(p: vec2<f32>) -> u32 {
-    let rel = (p - grid_scatter.min_world) / grid_scatter.cell_size;
-    let cx = clamp(i32(floor(rel.x)), 0, i32(grid_scatter.dims.x) - 1);
-    let cy = clamp(i32(floor(rel.y)), 0, i32(grid_scatter.dims.y) - 1);
-    return u32(cy) * grid_scatter.dims.x + u32(cx);
+    let h = grid_scatter.cell_size;
+    let c = vec2<i32>(floor(p / h));
+    let origin = vec2<i32>(round(grid_scatter.min_world / h));
+
+    let ix = clamp(c.x - origin.x, 0, i32(grid_scatter.dims.x) - 1);
+    let iy = clamp(c.y - origin.y, 0, i32(grid_scatter.dims.y) - 1);
+    return u32(iy) * grid_scatter.dims.x + u32(ix);
 }
 
 @compute @workgroup_size(256)
