@@ -751,7 +751,7 @@ impl Plugin for GPUSPHPlugin {
             Update,
             (
                 queue_particle_buffer,
-                //update_grid_buffers, // no cpu grid for now
+                update_grid_buffers,
                 update_integrate_params_buffer,
             ),
         );
@@ -851,28 +851,6 @@ impl Plugin for GPUSPHPlugin {
                     .after(init_starts_buffer_and_bg)
                     .after(init_gpu_entries_buffer),
                 prepare_scatter_pipeline.after(init_scatter_bgl),
-            )
-                .in_set(RenderSet::Prepare),
-        );
-        render_app.add_systems(
-            Render,
-            (
-                init_scatter_bgl,
-                init_scatter_resources_and_bg
-                    .after(init_scatter_bgl)
-                    .after(init_add_back_bgl) // params/stats exist by now
-                    .after(init_starts_buffer_and_bg)
-                    .after(init_grid_build_buffers), // counts existed earlier
-                prepare_scatter_pipeline
-                    .after(init_scatter_bgl)
-                    .after(init_scatter_resources_and_bg),
-                prepare_write_sentinel_pipeline
-                    .after(init_scatter_bgl) // layout exists
-                    .after(init_scatter_resources_and_bg),
-                init_clear_cursor_bg
-                    .after(init_grid_build_bind_group_layout)
-                    .after(init_scatter_bgl) // cursor exists by now
-                    .after(init_scatter_resources_and_bg),
             )
                 .in_set(RenderSet::Prepare),
         );
