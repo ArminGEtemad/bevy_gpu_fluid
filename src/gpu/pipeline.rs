@@ -467,10 +467,11 @@ impl Node for ClearCountsNode {
             return Ok(());
         };
 
-        let groups = ((gb.value.num_cells + 255) / 256).max(1);
+        let groups_1d = ((gb.value.num_cells + 255) / 256).max(1);
+        let (gx, gy) = split_groups_2d(groups_1d);
         info!(
-            "Info Node: clear_counts DISPATCH, cells = {}, groups = {}",
-            gb.value.num_cells, groups
+            "Info Node: clear_counts DISPATCH, cells = {}, groups = {}x{}",
+            gb.value.num_cells, gx, gy
         );
 
         let mut pass =
@@ -483,7 +484,7 @@ impl Node for ClearCountsNode {
 
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group.0, &[]);
-        pass.dispatch_workgroups(groups, 1, 1);
+        pass.dispatch_workgroups(gx, gy, 1);
 
         Ok(())
     }
@@ -733,10 +734,11 @@ impl Node for BlockScanNode {
         };
 
         // one workgroup per block of 256 cells
-        let groups = ((gb.num_cells + 255) / 256).max(1);
+        let groups_1d = ((gb.num_cells + 255) / 256).max(1);
+        let (gx, gy) = split_groups_2d(groups_1d);
         info!(
-            "Info Node: block_scan DISPATCH, blocks = {}, cells = {}",
-            groups, gb.num_cells
+            "Info Node: block_scan DISPATCH, blocks = {} ({}x{}), cells = {}",
+            groups_1d, gx, gy, gb.num_cells
         );
 
         let mut pass =
@@ -748,7 +750,7 @@ impl Node for BlockScanNode {
                 });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, &[]);
-        pass.dispatch_workgroups(groups, 1, 1);
+        pass.dispatch_workgroups(gx, gy, 1);
         Ok(())
     }
 }
@@ -925,10 +927,11 @@ impl Node for AddBackNode {
             return Ok(());
         };
 
-        let groups = ((gb.num_cells + 255) / 256).max(1);
+        let groups_1d = ((gb.num_cells + 255) / 256).max(1);
+        let (gx, gy) = split_groups_2d(groups_1d);
         info!(
-            "Info Node: add_back DISPATCH, cells = {}, groups = {}",
-            gb.num_cells, groups
+            "Info Node: add_back DISPATCH, cells = {}, groups = {}x{}",
+            gb.num_cells, gx, gy
         );
 
         let mut pass =
@@ -940,7 +943,7 @@ impl Node for AddBackNode {
                 });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, &[]);
-        pass.dispatch_workgroups(groups, 1, 1);
+        pass.dispatch_workgroups(gx, gy, 1);
 
         Ok(())
     }
