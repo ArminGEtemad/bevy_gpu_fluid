@@ -14,11 +14,12 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{
-    init_add_back_bg, init_add_back_bgl, init_block_scan_bgl, init_block_sums_and_bg,
-    init_block_sums_scan_bg, init_block_sums_scan_bgl, init_counts_to_starts_bgl,
-    init_cursor_buffer_and_clear_bg, init_gpu_entries_buffer, init_grid_build_bind_group_layout,
-    init_grid_build_buffers, init_grid_histogram_bind_group, init_grid_histogram_bind_group_layout,
-    init_scatter_bg, init_scatter_bgl, init_starts_buffer_and_bg,
+    GridEntriesGpuBuffer, GridStartsBuffer, init_add_back_bg, init_add_back_bgl,
+    init_block_scan_bgl, init_block_sums_and_bg, init_block_sums_scan_bg, init_block_sums_scan_bgl,
+    init_counts_to_starts_bgl, init_cursor_buffer_and_clear_bg, init_gpu_entries_buffer,
+    init_grid_build_bind_group_layout, init_grid_build_buffers, init_grid_histogram_bind_group,
+    init_grid_histogram_bind_group_layout, init_scatter_bg, init_scatter_bgl,
+    init_starts_buffer_and_bg,
 };
 use crate::gpu::pipeline::{
     add_add_back_node_to_graph, add_block_scan_node_to_graph, add_block_sums_scan_node_to_graph,
@@ -336,29 +337,36 @@ fn prepare_particle_bind_group(
     render_device: Res<RenderDevice>,
     layout: Res<ParticleBindGroupLayout>,
     extracted: Res<ExtractedParticleBuffer>,
-    grid: Res<ExtractedGrid>,
+    grid_params_only: Res<ExtractedGrid>,
+    starts_gpu: Res<GridStartsBuffer>,
+    entries_gpu: Res<GridEntriesGpuBuffer>,
     integ: Res<ExtractedIntegrateParamsBuffer>,
 ) {
     let bind_group = render_device.create_bind_group(
         Some("particle_bind_group"),
         &layout.0,
         &[
+            // binding(0): particles SSBO (rw)
             BindGroupEntry {
                 binding: 0,
                 resource: extracted.buffer.as_entire_binding(),
             },
+            // binding(1): GPU starts (ro STORAGE)  —— now GPU, sized num_cells+1 with sentinel
             BindGroupEntry {
                 binding: 1,
-                resource: grid.starts_buf.as_entire_binding(),
+                resource: starts_gpu.buffer.as_entire_binding(),
             },
+            // binding(2): GPU entries (rw STORAGE) —— now GPU-built entries
             BindGroupEntry {
                 binding: 2,
-                resource: grid.entries_buf.as_entire_binding(),
+                resource: entries_gpu.buffer.as_entire_binding(),
             },
+            // binding(3): GridParams UBO (CPU-built for now; provides dims/min_world/h)
             BindGroupEntry {
                 binding: 3,
-                resource: grid.params_buf.as_entire_binding(),
+                resource: grid_params_only.params_buf.as_entire_binding(),
             },
+            // binding(4): IntegrateParams UBO
             BindGroupEntry {
                 binding: 4,
                 resource: integ.buffer.as_entire_binding(),
@@ -366,7 +374,7 @@ fn prepare_particle_bind_group(
         ],
     );
     commands.insert_resource(ParticleBindGroup(bind_group));
-    info!("particle_bind_group is READY");
+    info!("particle_bind_group is READY (SPH wired to GPU CSR)");
 }
 
 fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<ReadbackBuffer>>) {
@@ -769,7 +777,9 @@ impl Plugin for GPUSPHPlugin {
             Render,
             (
                 // SPH compute
-                prepare_particle_bind_group,
+                prepare_particle_bind_group
+                    .after(init_starts_buffer_and_bg)
+                    .after(init_gpu_entries_buffer),
                 prepare_density_pipeline,
                 prepare_pressure_pipeline,
                 prepare_forces_pipeline,
