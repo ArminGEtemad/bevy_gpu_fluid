@@ -14,14 +14,14 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use crate::cpu::sph2d::SPHState;
 use crate::gpu::ffi::{GPUParticle, GridParams, IntegrateParams};
 use crate::gpu::grid_build::{
-    init_add_back_bg, init_add_back_bgl, init_block_scan_bgl, init_block_sums_and_bg,
-    init_block_sums_scan_bg, init_block_sums_scan_bgl, init_clear_cursor_bg,
-    init_counts_to_starts_bgl, init_grid_build_bind_group_layout, init_grid_build_buffers,
-    init_grid_histogram_bind_group, init_grid_histogram_bind_group_layout, init_scatter_bgl,
-    init_scatter_resources_and_bg, init_starts_buffer_and_bg,
+    GridEntriesGpuBuffer, GridStartsBuffer, init_add_back_bg, init_add_back_bgl,
+    init_block_scan_bgl, init_block_sums_and_bg, init_block_sums_scan_bg, init_block_sums_scan_bgl,
+    init_counts_to_starts_bgl, init_cursor_buffer_and_clear_bg, init_gpu_entries_buffer,
+    init_grid_build_bind_group_layout, init_grid_build_buffers, init_grid_histogram_bind_group,
+    init_grid_histogram_bind_group_layout, init_scatter_bg, init_scatter_bgl,
+    init_starts_buffer_and_bg,
 };
 use crate::gpu::pipeline::{
-    _add_prefix_sum_naive_node_to_graph, _prepare_prefix_sum_naive_pipeline,
     add_add_back_node_to_graph, add_block_scan_node_to_graph, add_block_sums_scan_node_to_graph,
     add_clear_counts_node_to_graph, add_clear_cursor_node_to_graph, add_density_node_to_graph,
     add_histogram_node_to_graph, add_scatter_node_to_graph, add_write_sentinel_node_to_graph,
@@ -337,29 +337,36 @@ fn prepare_particle_bind_group(
     render_device: Res<RenderDevice>,
     layout: Res<ParticleBindGroupLayout>,
     extracted: Res<ExtractedParticleBuffer>,
-    grid: Res<ExtractedGrid>,
+    grid_params_only: Res<ExtractedGrid>,
+    starts_gpu: Res<GridStartsBuffer>,
+    entries_gpu: Res<GridEntriesGpuBuffer>,
     integ: Res<ExtractedIntegrateParamsBuffer>,
 ) {
     let bind_group = render_device.create_bind_group(
         Some("particle_bind_group"),
         &layout.0,
         &[
+            // binding(0): particles SSBO (rw)
             BindGroupEntry {
                 binding: 0,
                 resource: extracted.buffer.as_entire_binding(),
             },
+            // binding(1): GPU starts (ro STORAGE)  —— now GPU, sized num_cells+1 with sentinel
             BindGroupEntry {
                 binding: 1,
-                resource: grid.starts_buf.as_entire_binding(),
+                resource: starts_gpu.buffer.as_entire_binding(),
             },
+            // binding(2): GPU entries (rw STORAGE) —— now GPU-built entries
             BindGroupEntry {
                 binding: 2,
-                resource: grid.entries_buf.as_entire_binding(),
+                resource: entries_gpu.buffer.as_entire_binding(),
             },
+            // binding(3): GridParams UBO (CPU-built for now; provides dims/min_world/h)
             BindGroupEntry {
                 binding: 3,
-                resource: grid.params_buf.as_entire_binding(),
+                resource: grid_params_only.params_buf.as_entire_binding(),
             },
+            // binding(4): IntegrateParams UBO
             BindGroupEntry {
                 binding: 4,
                 resource: integ.buffer.as_entire_binding(),
@@ -367,7 +374,7 @@ fn prepare_particle_bind_group(
         ],
     );
     commands.insert_resource(ParticleBindGroup(bind_group));
-    info!("particle_bind_group is READY");
+    info!("particle_bind_group is READY (SPH wired to GPU CSR)");
 }
 
 fn extract_readback_buffer(mut commands: Commands, readback: Extract<Res<ReadbackBuffer>>) {
@@ -447,7 +454,7 @@ impl GridBuffers {
         let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("Grid Params"),
             contents: bytemuck::bytes_of(&params),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         });
 
         let starts_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -725,7 +732,7 @@ pub struct GPUSPHPlugin;
 
 impl Plugin for GPUSPHPlugin {
     fn build(&self, app: &mut App) {
-        // App
+        // ================== App world ==================
         app.init_resource::<IntegrateConfig>();
         app.add_systems(
             Startup,
@@ -749,40 +756,48 @@ impl Plugin for GPUSPHPlugin {
             ),
         );
 
-        // Render
+        // ================== Render world ==================
         let render_app = app.sub_app_mut(RenderApp);
-        render_app
-            .add_systems(
-                ExtractSchedule,
-                (
-                    extract_particle_buffer,
-                    extract_bind_group_layout,
-                    extract_readback_buffer,
-                    extract_allow_copy,
-                    extract_grid_buffers,
-                    extract_integrate_params_buffer,
-                ),
+
+        // ---- Extract (App -> Render) ----
+        render_app.add_systems(
+            ExtractSchedule,
+            (
+                extract_particle_buffer,
+                extract_bind_group_layout,
+                extract_readback_buffer,
+                extract_allow_copy,
+                extract_grid_buffers,
+                extract_integrate_params_buffer,
+            ),
+        );
+
+        // ---- Prepare (pipelines, bind groups) ----
+        render_app.add_systems(
+            Render,
+            (
+                // SPH compute
+                prepare_particle_bind_group
+                    .after(init_starts_buffer_and_bg)
+                    .after(init_gpu_entries_buffer),
+                prepare_density_pipeline,
+                prepare_pressure_pipeline,
+                prepare_forces_pipeline,
+                prepare_integrate_pipeline,
+                // Grid build: counts & params
+                init_grid_build_bind_group_layout,
+                init_grid_build_buffers.after(init_grid_build_bind_group_layout),
+                prepare_clear_counts_pipeline.after(init_grid_build_bind_group_layout),
+                // Histogram
+                init_grid_histogram_bind_group_layout,
+                init_grid_histogram_bind_group
+                    .after(init_grid_histogram_bind_group_layout)
+                    .after(init_grid_build_buffers)
+                    .after(prepare_particle_bind_group),
+                prepare_histogram_pipeline.after(init_grid_histogram_bind_group_layout),
             )
-            .add_systems(
-                Render,
-                (
-                    prepare_particle_bind_group,
-                    prepare_density_pipeline,
-                    prepare_pressure_pipeline,
-                    prepare_forces_pipeline,
-                    prepare_integrate_pipeline,
-                    init_grid_build_bind_group_layout,
-                    init_grid_build_buffers.after(init_grid_build_bind_group_layout),
-                    prepare_clear_counts_pipeline.after(init_grid_build_bind_group_layout),
-                    init_grid_histogram_bind_group_layout,
-                    init_grid_histogram_bind_group
-                        .after(init_grid_histogram_bind_group_layout)
-                        .after(init_grid_build_buffers)
-                        .after(prepare_particle_bind_group),
-                    prepare_histogram_pipeline.after(init_grid_histogram_bind_group_layout),
-                )
-                    .in_set(RenderSet::Prepare),
-            );
+                .in_set(RenderSet::Prepare),
+        );
 
         // Render — block B (starts + block scan)
         render_app.add_systems(
@@ -792,6 +807,7 @@ impl Plugin for GPUSPHPlugin {
                 init_starts_buffer_and_bg
                     .after(init_counts_to_starts_bgl)
                     .after(init_grid_build_buffers),
+                // prepare_prefix_sum_naive_pipeline ... (kept disabled)
                 init_block_scan_bgl,
                 init_block_sums_and_bg
                     .after(init_block_scan_bgl)
@@ -801,7 +817,7 @@ impl Plugin for GPUSPHPlugin {
                 .in_set(RenderSet::Prepare),
         );
 
-        // Render — block C (block_sums scan + add-back)
+        // Render — block C (block_sums scan + add-back + sentinel)
         render_app.add_systems(
             Render,
             (
@@ -816,6 +832,25 @@ impl Plugin for GPUSPHPlugin {
                     .after(init_block_sums_and_bg)
                     .after(init_starts_buffer_and_bg),
                 prepare_add_back_pipeline.after(init_add_back_bgl),
+                // Sentinel pipeline (after add_back)
+                prepare_write_sentinel_pipeline.after(prepare_add_back_pipeline),
+            )
+                .in_set(RenderSet::Prepare),
+        );
+
+        // Render — block D (cursor + scatter)
+        render_app.add_systems(
+            Render,
+            (
+                init_cursor_buffer_and_clear_bg.after(prepare_add_back_pipeline),
+                init_gpu_entries_buffer.after(init_grid_build_buffers),
+                init_scatter_bgl,
+                init_scatter_bg
+                    .after(init_scatter_bgl)
+                    .after(init_cursor_buffer_and_clear_bg)
+                    .after(init_starts_buffer_and_bg)
+                    .after(init_gpu_entries_buffer),
+                prepare_scatter_pipeline.after(init_scatter_bgl),
             )
                 .in_set(RenderSet::Prepare),
         );
@@ -842,15 +877,16 @@ impl Plugin for GPUSPHPlugin {
                 .in_set(RenderSet::Prepare),
         );
 
-        add_density_node_to_graph(render_app); // sink exists first ✅
+        // ---- Render Graph nodes (order via edges) ----
+        add_density_node_to_graph(render_app);
         add_clear_counts_node_to_graph(render_app);
         add_histogram_node_to_graph(render_app);
+        // add_prefix_sum_naive_node_to_graph(render_app);
         add_block_scan_node_to_graph(render_app);
         add_block_sums_scan_node_to_graph(render_app);
         add_add_back_node_to_graph(render_app);
-        add_scatter_node_to_graph(render_app);
         add_write_sentinel_node_to_graph(render_app);
         add_clear_cursor_node_to_graph(render_app);
-        //add_prefix_sum_naive_node_to_graph(render_app);
+        add_scatter_node_to_graph(render_app);
     }
 }

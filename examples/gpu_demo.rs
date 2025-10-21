@@ -134,7 +134,6 @@ fn sync_sprites_from_gpu(
                 }
             }
             readback.buffer.unmap();
-
             *fsm = 4;
             return;
         }

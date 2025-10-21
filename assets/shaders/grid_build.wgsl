@@ -13,10 +13,14 @@ struct GridBuildParams {
 
 struct Particle {
     pos: vec2<f32>,
+    vel: vec2<f32>,
+    acc: vec2<f32>,
+    rho: f32,
+    p: f32,
 };
 struct ParticleBuf {
-    data: array<Particle>,
-};
+    data: array<Particle>, // runtime-sized array must be last
+}
 
 struct GridParams {
     min_world: vec2<f32>,
@@ -59,10 +63,14 @@ fn clear_counts(
 @group(0) @binding(2) var<uniform> grid: GridParams;
 
 fn cell_index(p: vec2<f32>) -> u32 {
-    let rel = (p - grid.min_world) / grid.cell_size;
-    let cx = clamp(i32(floor(rel.x)), 0, i32(grid.dims.x) - 1);
-    let cy = clamp(i32(floor(rel.y)), 0, i32(grid.dims.y) - 1);
-    return u32(cy) * grid.dims.x + u32(cx);
+    let h = grid.cell_size;
+    // CPU-compatible: floor(pos / h) - round(min_world / h)
+    let c = vec2<i32>(floor(p / h));
+    let origin = vec2<i32>(round(grid.min_world / h));
+
+    let ix = clamp(c.x - origin.x, 0, i32(grid.dims.x) - 1);
+    let iy = clamp(c.y - origin.y, 0, i32(grid.dims.y) - 1);
+    return u32(iy) * grid.dims.x + u32(ix);
 }
 
 @compute @workgroup_size(256)
@@ -191,26 +199,56 @@ fn add_back_block_offsets(
     let offs = block_sums.data[block];
     starts_rw.data[i] = starts_rw.data[i] + offs;
 }
-@group(0) @binding(3) var<storage, read_write> entries : U32Buf; 
-@group(0) @binding(4) var<storage, read_write> cursor : U32AtomicBuf;  
+@compute @workgroup_size(1)
+fn write_sentinel(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x > 0u { return; }
+
+    // number of real cells == length of counts
+    let n_cells = arrayLength(&counts_ro.data);
+    if n_cells == 0u { return; }
+
+    let last_prefix = starts_rw.data[n_cells - 1u];
+    let last_count = atomicLoad(&counts_ro.data[n_cells - 1u]);
+
+    // exclusive scan sentinel: starts[num_cells] = sum(counts)
+    starts_rw.data[n_cells] = last_prefix + last_count;
+}
+
+// =================== Scatter (group 0) ===================
+// Particles → Entries using Starts + per-cell Cursor
+@group(0) @binding(0) var<storage, read> particles_scatter : ParticleBuf;
+@group(0) @binding(1) var<storage, read> starts_scatter : U32Buf;
+@group(0) @binding(2) var<storage, read_write> cursor_rw : U32AtomicBuf;
+@group(0) @binding(3) var<storage, read_write> entries_rw : U32Buf;
+@group(0) @binding(4) var<uniform> grid_scatter : GridParams;
+
+fn cell_index_scatter(p: vec2<f32>) -> u32 {
+    let h = grid_scatter.cell_size;
+    let c = vec2<i32>(floor(p / h));
+    let origin = vec2<i32>(round(grid_scatter.min_world / h));
+
+    let ix = clamp(c.x - origin.x, 0, i32(grid_scatter.dims.x) - 1);
+    let iy = clamp(c.y - origin.y, 0, i32(grid_scatter.dims.y) - 1);
+    return u32(iy) * grid_scatter.dims.x + u32(ix);
+}
 
 @compute @workgroup_size(256)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    let n = arrayLength(&particles.data);
+    let n = arrayLength(&particles_scatter.data);
     if i >= n { return; }
 
-    let c = cell_index(particles.data[i].pos);
-    let loc = atomicAdd(&cursor.data[c], 1u);
-    let dst = starts_rw.data[c] + loc;
-    entries.data[dst] = i;
-}
-@compute @workgroup_size(1)
-fn write_sentinel(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x != 0u { return; }
-    let nstarts = arrayLength(&starts_rw.data);
-    if nstarts == 0u { return; }
-    let last = nstarts - 1u;
-    let total = arrayLength(&particles.data);   // ← number of particles
-    starts_rw.data[last] = total;
+    let pos = particles_scatter.data[i].pos;
+    let cell = cell_index_scatter(pos);
+
+    // reserve a slot in this cell
+    let base = starts_scatter.data[cell];
+    let offs = atomicAdd(&cursor_rw.data[cell], 1u);
+    let idx = base + offs;
+
+    // bounds guard (paranoia)
+    let entries_len = arrayLength(&entries_rw.data);
+    if idx < entries_len {
+        entries_rw.data[idx] = i;
+    }
 }
