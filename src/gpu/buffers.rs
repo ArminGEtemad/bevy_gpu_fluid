@@ -24,13 +24,20 @@ use crate::gpu::grid_build::{
 use crate::gpu::pipeline::{
     add_add_back_node_to_graph, add_block_scan_node_to_graph, add_block_sums_scan_node_to_graph,
     add_clear_counts_node_to_graph, add_clear_cursor_node_to_graph, add_density_node_to_graph,
-    add_histogram_node_to_graph, add_scatter_node_to_graph, add_write_sentinel_node_to_graph,
-    prepare_add_back_pipeline, prepare_block_scan_pipeline, prepare_block_sums_scan_pipeline,
-    prepare_clear_counts_pipeline, prepare_density_pipeline, prepare_forces_pipeline,
-    prepare_histogram_pipeline, prepare_integrate_pipeline, prepare_pressure_pipeline,
-    prepare_scatter_pipeline, prepare_write_sentinel_pipeline,
+    add_histogram_node_to_graph, add_particles_draw_node_to_graph, add_scatter_node_to_graph,
+    add_write_sentinel_node_to_graph, prepare_add_back_pipeline, prepare_block_scan_pipeline,
+    prepare_block_sums_scan_pipeline, prepare_clear_counts_pipeline, prepare_density_pipeline,
+    prepare_forces_pipeline, prepare_histogram_pipeline, prepare_integrate_pipeline,
+    prepare_pressure_pipeline, prepare_scatter_pipeline, prepare_write_sentinel_pipeline,
 };
 use glam::{IVec2, Vec2};
+
+use crate::gpu::draw_buffers::{
+    extract_draw_params_buffer, init_draw_bgl, init_draw_params, init_quad_vb, prepare_draw_bg,
+    update_draw_params,
+};
+
+use crate::gpu::draw_pipeline::prepare_draw_pipeline;
 
 // ==================== resources ======================================
 
@@ -221,7 +228,7 @@ fn init_readback_buffer(
 }
 
 fn init_allow_copy(mut commands: Commands) {
-    commands.insert_resource(AllowCopy(true));
+    commands.insert_resource(AllowCopy(false)); // stopping all readback
 }
 
 pub fn init_grid_buffers(
@@ -737,6 +744,7 @@ impl Plugin for GPUSPHPlugin {
         app.add_systems(
             Startup,
             (
+                init_draw_params,
                 init_gpu_buffers,
                 init_readback_buffer,
                 init_particle_bind_group_layout,
@@ -750,6 +758,7 @@ impl Plugin for GPUSPHPlugin {
         .add_systems(
             Update,
             (
+                update_draw_params,
                 queue_particle_buffer,
                 update_grid_buffers,
                 update_integrate_params_buffer,
@@ -763,6 +772,7 @@ impl Plugin for GPUSPHPlugin {
         render_app.add_systems(
             ExtractSchedule,
             (
+                extract_draw_params_buffer,
                 extract_particle_buffer,
                 extract_bind_group_layout,
                 extract_readback_buffer,
@@ -779,7 +789,8 @@ impl Plugin for GPUSPHPlugin {
                 // SPH compute
                 prepare_particle_bind_group
                     .after(init_starts_buffer_and_bg)
-                    .after(init_gpu_entries_buffer),
+                    .after(init_gpu_entries_buffer)
+                    .after(init_draw_bgl),
                 prepare_density_pipeline,
                 prepare_pressure_pipeline,
                 prepare_forces_pipeline,
@@ -854,6 +865,16 @@ impl Plugin for GPUSPHPlugin {
             )
                 .in_set(RenderSet::Prepare),
         );
+        render_app.add_systems(
+            Render,
+            (
+                init_quad_vb,
+                init_draw_bgl,
+                prepare_draw_bg.after(init_draw_bgl),
+                prepare_draw_pipeline.after(init_draw_bgl),
+            )
+                .in_set(RenderSet::Prepare),
+        );
 
         // ---- Render Graph nodes (order via edges) ----
         add_density_node_to_graph(render_app);
@@ -866,5 +887,6 @@ impl Plugin for GPUSPHPlugin {
         add_write_sentinel_node_to_graph(render_app);
         add_clear_cursor_node_to_graph(render_app);
         add_scatter_node_to_graph(render_app);
+        add_particles_draw_node_to_graph(render_app);
     }
 }
