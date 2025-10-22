@@ -1168,3 +1168,30 @@ pub fn add_scatter_node_to_graph(render_app: &mut bevy::app::SubApp) {
     let _ = graph.add_node_edge(ClearCursorPassLabel, ScatterPassLabel);
     let _ = graph.add_node_edge(ScatterPassLabel, DensityPassLabel);
 }
+
+// -----------------------------------------------------------------------------------------------------
+
+use crate::gpu::draw_pass::{ParticlesDrawNode, ParticlesDrawPassLabel};
+use bevy::core_pipeline::core_2d::graph::{Core2d, Node2d};
+use bevy::render::render_graph::ViewNodeRunner;
+
+pub fn add_particles_draw_node_to_graph(render_app: &mut bevy::app::SubApp) {
+    // Need &mut World to build the ViewNodeRunner in 0.16.1
+    let world = render_app.world_mut();
+
+    // Build the runner
+    let runner = ViewNodeRunner::new(ParticlesDrawNode::default(), world);
+
+    // Insert into the Core2d subgraph (NOT the root graph)
+    let mut graph = world.resource_mut::<RenderGraph>();
+    if let Some(core2d) = graph.get_sub_graph_mut(Core2d) {
+        core2d.add_node(ParticlesDrawPassLabel, runner);
+
+        // Draw after the main pass but before tonemapping, into the HDR main texture
+        let _ = core2d.add_node_edge(Node2d::EndMainPass, ParticlesDrawPassLabel);
+        let _ = core2d.add_node_edge(ParticlesDrawPassLabel, Node2d::Tonemapping);
+    } else {
+        // (Shouldn't happen, but a clear log helps if Core2d wasn’t added)
+        bevy::log::error!("Core2d subgraph not found; did you enable the 2D pipeline?");
+    }
+}
