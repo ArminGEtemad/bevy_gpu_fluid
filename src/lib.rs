@@ -7,15 +7,16 @@ pub mod cpu {
 }
 
 pub mod gpu {
-    pub mod ffi;
     pub mod buffers;
+    pub mod ffi;
+    pub mod grid_build;
     pub mod pipeline;
 }
 
 #[derive(Component)]
 pub struct SceneControl {
     pub target: ControlTarget,
-    pub speed: f32, 
+    pub speed: f32,
 }
 
 #[derive(Component, Copy, Clone)]
@@ -27,8 +28,8 @@ pub struct Rotates {
 
 #[derive(Resource, PartialEq, Debug, Copy, Clone)]
 pub enum ControlTarget {
-    Camera, 
-    Light, 
+    Camera,
+    Light,
 }
 
 #[derive(Debug, Copy, Clone)]
