@@ -1,10 +1,18 @@
 # bevy_gpu_fluid
-
+## GPU Fluid Simulation (Paused)
 > **GPU-accelerated Smoothed-Particle Hydrodynamics for Bevy 0.16**
 > _Early work-in-progress – APIs will change until v0.1_
 > _Currently a CPU prototype_
 > _Compute Shader with CPU readback implemented_
 > _GPU rendering in progress_
+
+
+This project implements a GPU-accelerated 2D fluid simulation using SPH and Bevy’s custom render pipeline.
+Short term Goal: Simulate water entirely on the GPU and render it in real time.
+
+- GPU math and CPU rendering integrated
+- Full shader rendering incomplete
+- Cleanup phase now in progress to improve modularity and clarity
 
 For more information please look [docs](docs).
 
